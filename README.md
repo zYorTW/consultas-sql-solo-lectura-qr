@@ -25,16 +25,20 @@ bloquea antes de tocar la base de datos.
 ## Estructura del proyecto
 
 ```
-main_dynamic.py               # Aplicación completa (UI, validación de seguridad, acceso a datos)
-queries_config.example.json   # Ejemplo de formato de consultas guardadas (datos ficticios)
-.env.example                  # Ejemplo de variables de conexión a SQL Server
-crear_login_solo_lectura.sql  # Script opcional para el DBA: login de SQL Server solo-lectura
+README.md
+assets/                                    # Capturas usadas en este README
+Codigo Qr Dinamico/
+├── main_dynamic.py               # Aplicación completa (UI, validación de seguridad, acceso a datos)
+├── queries_config.example.json   # Ejemplo de formato de consultas guardadas (datos ficticios)
+├── .env.example                  # Ejemplo de variables de conexión a SQL Server
+└── crear_login_solo_lectura.sql  # Script opcional para el DBA: login de SQL Server solo-lectura
 ```
 
-Este repositorio contiene únicamente la herramienta de consultas dinámicas. El
-`queries_config.json` real (con las consultas y nombres de tablas propios del ERP de la
-empresa), el `.env` con credenciales reales, y la versión anterior de la aplicación (una
-sola consulta fija embebida en el código) son internos y no se publican aquí.
+Este repositorio contiene únicamente la herramienta de consultas dinámicas, dentro de
+`Codigo Qr Dinamico/`. El `queries_config.json` real (con las consultas y nombres de
+tablas propios del ERP de la empresa), el `.env` con credenciales reales, y la versión
+anterior de la aplicación (una sola consulta fija embebida en el código) son internos y
+no se publican aquí.
 
 ## Requisitos previos
 
@@ -48,6 +52,12 @@ pip install pyodbc qrcode pillow python-dotenv pyinstaller
 ```
 
 ## Configuración
+
+Todos los pasos siguientes se ejecutan dentro de la carpeta `Codigo Qr Dinamico/`:
+
+```
+cd "Codigo Qr Dinamico"
+```
 
 1. Copia `.env.example` a `.env` y completa los datos de tu servidor:
 
@@ -70,6 +80,8 @@ pip install pyodbc qrcode pillow python-dotenv pyinstaller
    además de la validación que hace la propia aplicación.
 
 ## Ejecutar el proyecto
+
+Desde dentro de `Codigo Qr Dinamico/`:
 
 ```
 python main_dynamic.py
