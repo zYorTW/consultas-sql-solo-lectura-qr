@@ -39,8 +39,8 @@ sola consulta fija embebida en el código) son internos y no se publican aquí.
 ## Requisitos previos
 
 - Python 3.10+
-- Driver ODBC de SQL Server instalado en el sistema (por ejemplo, "ODBC Driver 17/18 for
-  SQL Server").
+- Driver ODBC de SQL Server instalado en el sistema (por ejemplo, "ODBC Driver 17 for
+  SQL Server"). Descarga: https://learn.microsoft.com/es-es/sql/connect/odbc/download-odbc-driver-for-sql-server?view=sql-server-ver17
 - Dependencias:
 
 ```
