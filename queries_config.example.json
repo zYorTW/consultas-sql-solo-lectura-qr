@@ -1,0 +1,32 @@
+[
+  {
+    "name": "Empleados por departamento",
+    "description": "Ejemplo: lista empleados activos de un departamento dado",
+    "sql": "SELECT TOP 100 E.ID AS Id_Empleado, E.NOMBRE AS Nombre, D.NOMBRE AS Departamento, E.FECHA_INGRESO AS Fecha_Ingreso FROM EMPLEADOS AS E INNER JOIN DEPARTAMENTOS AS D ON E.DEPARTAMENTO_ID = D.ID WHERE D.NOMBRE = ? AND E.ACTIVO = 1",
+    "params": [
+      {
+        "name": "departamento",
+        "label": "Nombre del departamento",
+        "type": "str",
+        "required": true
+      }
+    ],
+    "generate_qr": false,
+    "active": true
+  },
+  {
+    "name": "Pedido por número",
+    "description": "Ejemplo: consulta un pedido puntual y genera un QR con el resultado",
+    "sql": "SELECT P.NUMERO AS Numero_Pedido, P.FECHA AS Fecha, C.NOMBRE AS Cliente, P.TOTAL AS Total FROM PEDIDOS AS P INNER JOIN CLIENTES AS C ON P.CLIENTE_ID = C.ID WHERE P.NUMERO = ?",
+    "params": [
+      {
+        "name": "numero_pedido",
+        "label": "Número de pedido",
+        "type": "int",
+        "required": true
+      }
+    ],
+    "generate_qr": true,
+    "active": true
+  }
+]

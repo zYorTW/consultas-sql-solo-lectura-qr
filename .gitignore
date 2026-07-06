@@ -1,0 +1,10 @@
+main.py
+main.py.bak
+CLAUDE.md
+.env
+queries_config.json
+app.log
+build/
+dist/
+__pycache__/
+*.pyc
