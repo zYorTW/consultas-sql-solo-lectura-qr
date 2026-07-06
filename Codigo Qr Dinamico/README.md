@@ -84,6 +84,79 @@ pyinstaller --noconfirm --onefile --windowed --name "Consultas Dinamicas" main_d
 El `.exe` resultante debe distribuirse junto con `.env` y `queries_config.json` en la
 misma carpeta (se leen del directorio de trabajo, no quedan empaquetados dentro del exe).
 
+## Cómo se usa (paso a paso)
+
+### 1. Ventana principal
+
+![Ventana principal](assets/01-ventana-principal.png)
+
+- **Consulta guardada**: selector con todas las consultas activas guardadas en
+  `queries_config.json`. Al elegir una, aparece su descripción justo debajo.
+- **Nueva consulta / Editar consulta / Eliminar consulta**: administran las consultas
+  guardadas (ver sección siguiente).
+- **Vista previa SQL**: muestra el `SELECT` exacto que se va a ejecutar, de solo lectura
+  (no se puede editar desde aquí — para cambiarlo hay que usar "Editar consulta").
+- **Ejecutar consulta / Limpiar**: ejecutan la consulta seleccionada o limpian el
+  resultado y el QR en pantalla.
+- **Resultado JSON**: el resultado de la consulta, siempre en JSON.
+- **Código QR**: si la consulta tiene el QR habilitado, aquí aparece el código generado
+  a partir del resultado.
+
+### 2. Elegir una consulta y llenar sus parámetros
+
+Al seleccionar una consulta con parámetros (por ejemplo, una que filtra por número de
+pedido o por nombre de departamento), la app genera automáticamente un campo por cada
+parámetro declarado, con el tipo correcto (texto, entero, decimal o fecha):
+
+![Parámetros dinámicos](assets/02-parametros.png)
+
+Si dejas vacío un parámetro marcado como obligatorio, o escribes un valor que no
+corresponde al tipo (por ejemplo, letras en un campo entero), la app lo rechaza antes de
+tocar la base de datos y te dice cuál es el problema.
+
+### 3. Ejecutar y ver el resultado + QR
+
+Al presionar **"Ejecutar consulta"**, el resultado aparece como JSON y, si esa consulta
+tiene marcada la opción "Generar QR", el código QR se genera a partir de ese mismo JSON:
+
+![Resultado y QR](assets/03-resultado-y-qr.png)
+
+Si la consulta no devuelve filas, no hay nada que codificar: el panel del QR lo indica
+explícitamente ("Sin resultados: no hay datos para generar el QR") en vez de quedar en
+blanco sin explicación.
+
+### 4. Crear una consulta nueva
+
+Con **"Nueva consulta"** se abre el formulario para definir una consulta desde cero, sin
+tocar código:
+
+![Formulario de nueva consulta](assets/04-nueva-consulta.png)
+
+- **Nombre**: como aparecerá en el selector de la ventana principal.
+- **Descripción**: texto corto que se muestra debajo del selector al elegirla.
+- **Generar QR con el resultado**: si se marca, cada ejecución exitosa genera un QR.
+- **Consulta activa**: si se desmarca, la consulta se guarda pero no aparece en el
+  selector (útil para dejarla pausada sin borrarla).
+- **Sentencia SQL**: el `SELECT` a ejecutar. Los parámetros van como `?` en el orden en
+  que se van a llenar (igual que en `pyodbc`).
+- **Parámetros**: un botón "+ Agregar parámetro" por cada `?` de la consulta, en el mismo
+  orden. Cada parámetro tiene nombre interno, etiqueta visible, tipo (`str`/`int`/`float`/
+  `date`) y si es obligatorio.
+- **Guardar**: antes de guardar, valida que el SQL sea de solo lectura y que la cantidad
+  de parámetros coincida con la cantidad de `?` — si algo no cuadra, explica exactamente
+  qué corregir.
+
+**Editar consulta** abre el mismo formulario con los datos ya cargados; **Eliminar
+consulta** la borra de `queries_config.json` (pide confirmación antes).
+
+### 5. Qué pasa si se intenta algo que no sea solo lectura
+
+Tanto al guardar como al ejecutar, cualquier intento de `INSERT`, `UPDATE`, `DELETE`,
+`DROP`, `EXEC`, procedimientos, o varias sentencias separadas por `;`, se bloquea antes de
+tocar la base de datos:
+
+![Bloqueo de seguridad](assets/05-bloqueo-seguridad.png)
+
 ## Funcionalidades
 
 - Selector de consultas guardadas, con vista previa del SQL antes de ejecutar.

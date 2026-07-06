@@ -430,8 +430,12 @@ class DynamicQueryApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Sucroal - Consultas Dinámicas SQL (solo lectura)")
-        self.root.geometry("1000x820")
-        self.root.minsize(800, 620)
+        # ponytail: cap la altura inicial a la pantalla real, así el QR (al final de la
+        # ventana) no queda cortado en portátiles con menos de 820px de alto disponibles.
+        screen_height = self.root.winfo_screenheight()
+        window_height = min(820, screen_height - 100)
+        self.root.geometry(f"1000x{window_height}")
+        self.root.minsize(800, min(620, window_height))
 
         self.qr_photo = None
         self.qr_image_pil = None
@@ -489,10 +493,10 @@ class DynamicQueryApp:
         ttk.Label(action_frame, textvariable=self.status_var).pack(side="left", padx=15)
 
         result_frame = ttk.LabelFrame(main, text="Resultado JSON", padding=10)
-        result_frame.pack(fill="both", expand=True, pady=(0, 10))
+        result_frame.pack(fill="x", expand=False, pady=(0, 10))
         text_container = ttk.Frame(result_frame)
         text_container.pack(fill="both", expand=True)
-        self.result_text = tk.Text(text_container, height=12, wrap="word", state="disabled")
+        self.result_text = tk.Text(text_container, height=6, wrap="word", state="disabled")
         result_scroll = ttk.Scrollbar(text_container, orient="vertical", command=self.result_text.yview)
         self.result_text.configure(yscrollcommand=result_scroll.set)
         self.result_text.pack(side="left", fill="both", expand=True)
@@ -691,6 +695,10 @@ class DynamicQueryApp:
                     self.qr_label.config(image="", text="El resultado es demasiado grande para un QR.")
                     self.qr_photo = None
                     self.qr_image_pil = None
+            elif query.get("generate_qr") and not rows:
+                self.qr_label.config(image="", text="Sin resultados: no hay datos para generar el QR.")
+                self.qr_photo = None
+                self.qr_image_pil = None
             else:
                 self.qr_label.config(image="", text="Aquí aparecerá el QR")
 
