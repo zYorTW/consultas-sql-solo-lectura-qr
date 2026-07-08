@@ -146,6 +146,8 @@ equipo nuevo hay que reingresarlas una vez editando la conexión.
 
 Con **"Nueva conexión"** se abre un formulario para definir una conexión sin tocar código:
 
+![Formulario de conexión](assets/02-nueva-conexion.png)
+
 - **Nombre**: como aparecerá en el selector de conexiones (por ejemplo, "Producción Báscula").
 - **Driver ODBC**, **Servidor** y **Base de datos**: datos de conexión a SQL Server.
 - **Autenticación**: usuario SQL Server (usuario + contraseña) o autenticación de Windows
@@ -168,7 +170,7 @@ Al seleccionar una consulta con parámetros (por ejemplo, una que filtra por nú
 pedido o por nombre de departamento), la app genera automáticamente un campo por cada
 parámetro declarado, con el tipo correcto (texto, entero, decimal o fecha):
 
-![Parámetros dinámicos](assets/02-parametros.png)
+![Parámetros dinámicos](assets/03-parametros.png)
 
 Si dejas vacío un parámetro marcado como obligatorio, o escribes un valor que no
 corresponde al tipo (por ejemplo, letras en un campo entero), la app lo rechaza antes de
@@ -179,7 +181,7 @@ tocar la base de datos y te dice cuál es el problema.
 Al presionar **"Ejecutar consulta"**, el resultado aparece como JSON y, si esa consulta
 tiene marcada la opción "Generar QR", el código QR se genera a partir de ese mismo JSON:
 
-![Resultado y QR](assets/03-resultado-y-qr.png)
+![Resultado y QR](assets/04-resultado-y-qr.png)
 
 Si la consulta no devuelve filas, no hay nada que codificar: el panel del QR lo indica
 explícitamente ("Sin resultados: no hay datos para generar el QR") en vez de quedar en
@@ -190,7 +192,7 @@ blanco sin explicación.
 Con **"Nueva consulta"** se abre el formulario para definir una consulta desde cero, sin
 tocar código:
 
-![Formulario de nueva consulta](assets/04-nueva-consulta.png)
+![Formulario de nueva consulta](assets/05-nueva-consulta.png)
 
 - **Nombre**: como aparecerá en el selector de la ventana principal.
 - **Descripción**: texto corto que se muestra debajo del selector al elegirla.
@@ -217,7 +219,7 @@ Tanto al guardar como al ejecutar, cualquier intento de `INSERT`, `UPDATE`, `DEL
 `DROP`, `EXEC`, procedimientos, o varias sentencias separadas por `;`, se bloquea antes de
 tocar la base de datos:
 
-![Bloqueo de seguridad](assets/05-bloqueo-seguridad.png)
+![Bloqueo de seguridad](assets/06-bloqueo-seguridad.png)
 
 ## Funcionalidades
 
