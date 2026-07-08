@@ -1,0 +1,24 @@
+[
+  {
+    "name": "Producción Báscula",
+    "driver": "ODBC Driver 17 for SQL Server",
+    "server": "SERVIDOR_PROD\\INSTANCIA",
+    "database": "BD_BASCULA",
+    "auth_type": "sql_server",
+    "username": "usuario_lectura",
+    "password_ref": "",
+    "timeout": 5,
+    "active": true
+  },
+  {
+    "name": "Pruebas Báscula",
+    "driver": "ODBC Driver 17 for SQL Server",
+    "server": "SERVIDOR_TEST\\INSTANCIA",
+    "database": "BD_BASCULA_TEST",
+    "auth_type": "windows",
+    "username": "",
+    "password_ref": "",
+    "timeout": 5,
+    "active": true
+  }
+]

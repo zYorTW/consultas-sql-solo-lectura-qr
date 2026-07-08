@@ -3,6 +3,7 @@ main.py.bak
 CLAUDE.md
 .env
 queries_config.json
+db_connections.json
 app.log
 build/
 dist/

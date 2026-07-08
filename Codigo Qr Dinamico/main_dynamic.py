@@ -4,11 +4,13 @@ import os
 import re
 import threading
 import tkinter as tk
+import uuid
 from datetime import date, datetime, time
 from decimal import Decimal
 from logging.handlers import RotatingFileHandler
 from tkinter import ttk, messagebox
 
+import keyring
 import pyodbc
 import qrcode
 from qrcode.exceptions import DataOverflowError
@@ -20,27 +22,29 @@ from dotenv import load_dotenv
 # ==========================================
 load_dotenv()
 
+CONNECTIONS_FILE = os.getenv("CONNECTIONS_FILE", "db_connections.json")
+QUERIES_FILE = os.getenv("QUERIES_FILE", "queries_config.json")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+
+try:
+    MAX_ROWS = int(os.getenv("MAX_ROWS", "500"))
+except ValueError:
+    MAX_ROWS = 500
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
         RotatingFileHandler("app.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8")
     ],
 )
 
-DB_CONFIG = {
-    "driver": os.getenv("DB_DRIVER"),
-    "server": os.getenv("DB_SERVER"),
-    "database": os.getenv("DB_DATABASE"),
-    "username": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "use_windows_auth": os.getenv("DB_WINDOWS_AUTH", "False").strip().lower() == "true",
-    "timeout": int(os.getenv("DB_TIMEOUT", 5)),
-}
-
-CONFIG_FILE = "queries_config.json"
 PARAM_TYPES = ["str", "int", "float", "date"]
-MAX_ROWS = 500  # ponytail: hard client-side cap; raise via .env if a real need for more shows up
+AUTH_TYPES = ["windows", "sql_server"]
+
+# Servicio bajo el cual se guardan las contraseñas en el
+# Administrador de credenciales de Windows (vía keyring).
+KEYRING_SERVICE = "SucroalConsultasDinamicas"
 
 
 class SQLSecurityError(Exception):
@@ -58,6 +62,10 @@ _BLOCKED_KEYWORDS = [
     "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE",
     "MERGE", "EXEC", "EXECUTE", "USE", "GRANT", "REVOKE", "DENY",
     "BACKUP", "RESTORE", "PUT", "INTO",
+    # Administración / DoS / exfiltración (no pedidos explícitamente, pero
+    # violan el principio de solo lectura tanto como los anteriores).
+    "SHUTDOWN", "KILL", "DBCC", "RECONFIGURE", "WAITFOR", "BULK",
+    "OPENROWSET", "OPENQUERY", "OPENDATASOURCE",
 ]
 _BLOCKED_PREFIXES = ["XP_", "SP_"]
 
@@ -105,13 +113,49 @@ def needs_row_filter_warning(sql):
     return not _TOP_RE.search(sql) and not _WHERE_RE.search(sql)
 
 
+def query_allowed_on(query, connection_name):
+    """True si la consulta puede ejecutarse en la conexión dada.
+    Lista 'allowed_connections' vacía o ausente = permitida en todas."""
+    allowed = query.get("allowed_connections") or []
+    return not allowed or connection_name in allowed
+
+
 # ==========================================
-# ALMACÉN DE CONFIGURACIONES (queries_config.json)
+# CONTRASEÑAS (Administrador de credenciales de Windows)
 # ==========================================
-class QueryConfigStore:
-    def __init__(self, path=CONFIG_FILE):
+def save_password(password_ref, password):
+    keyring.set_password(KEYRING_SERVICE, password_ref, password)
+
+
+def get_password(password_ref):
+    if not password_ref:
+        return None
+    try:
+        return keyring.get_password(KEYRING_SERVICE, password_ref)
+    except Exception:
+        logging.exception("No se pudo leer la credencial '%s' del almacén de Windows", password_ref)
+        return None
+
+
+def delete_password(password_ref):
+    if not password_ref:
+        return
+    try:
+        keyring.delete_password(KEYRING_SERVICE, password_ref)
+    except Exception:
+        # La credencial puede no existir; no es un error fatal.
+        logging.info("No se eliminó la credencial '%s' (posiblemente no existía)", password_ref)
+
+
+# ==========================================
+# ALMACENES JSON (conexiones y consultas)
+# ==========================================
+class JsonListStore:
+    """Lista de dicts identificados por 'name', persistida en un archivo JSON local."""
+
+    def __init__(self, path):
         self.path = path
-        self.queries = []
+        self.items = []
         self.load_error = None
         self.load()
 
@@ -121,45 +165,74 @@ class QueryConfigStore:
             return
         try:
             with open(self.path, "r", encoding="utf-8") as f:
-                self.queries = json.load(f)
+                self.items = json.load(f)
         except (json.JSONDecodeError, OSError) as e:
             logging.exception("Error leyendo %s", self.path)
-            self.queries = []
+            self.items = []
             self.load_error = f"No se pudo leer '{self.path}': {e}"
 
     def save(self):
         tmp_path = self.path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(self.queries, f, ensure_ascii=False, indent=2)
+            json.dump(self.items, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, self.path)
 
-    def active_queries(self):
-        return [q for q in self.queries if q.get("active", True)]
+    def active_items(self):
+        return [i for i in self.items if i.get("active", True)]
 
     def find_by_name(self, name):
-        return next((q for q in self.queries if q["name"] == name), None)
+        return next((i for i in self.items if i["name"] == name), None)
 
-    def add(self, query):
-        self._validate(query)
-        if self.find_by_name(query["name"]):
-            raise ConfigError(f"Ya existe una consulta llamada '{query['name']}'.")
-        self.queries.append(query)
+    def add(self, item):
+        self._validate(item)
+        if self.find_by_name(item["name"]):
+            raise ConfigError(f"Ya existe un elemento llamado '{item['name']}'.")
+        self.items.append(item)
         self.save()
 
-    def update(self, original_name, query):
-        self._validate(query)
-        idx = next((i for i, q in enumerate(self.queries) if q["name"] == original_name), None)
+    def update(self, original_name, item):
+        self._validate(item)
+        idx = next((i for i, it in enumerate(self.items) if it["name"] == original_name), None)
         if idx is None:
-            raise ConfigError("La consulta a editar ya no existe.")
-        if query["name"] != original_name and self.find_by_name(query["name"]):
-            raise ConfigError(f"Ya existe una consulta llamada '{query['name']}'.")
-        self.queries[idx] = query
+            raise ConfigError("El elemento a editar ya no existe.")
+        if item["name"] != original_name and self.find_by_name(item["name"]):
+            raise ConfigError(f"Ya existe un elemento llamado '{item['name']}'.")
+        self.items[idx] = item
         self.save()
 
     def delete(self, name):
-        self.queries = [q for q in self.queries if q["name"] != name]
+        self.items = [i for i in self.items if i["name"] != name]
         self.save()
 
+    def _validate(self, item):
+        raise NotImplementedError
+
+
+class DatabaseConnectionStore(JsonListStore):
+    def _validate(self, conn):
+        if not conn.get("name", "").strip():
+            raise ConfigError("El nombre de la conexión es obligatorio.")
+        if not conn.get("driver", "").strip():
+            raise ConfigError("Debes indicar el driver ODBC.")
+        if not conn.get("server", "").strip():
+            raise ConfigError("Debes indicar el servidor.")
+        if not conn.get("database", "").strip():
+            raise ConfigError("Debes indicar la base de datos.")
+        if conn.get("auth_type") not in AUTH_TYPES:
+            raise ConfigError("El tipo de autenticación debe ser 'windows' o 'sql_server'.")
+        if conn["auth_type"] == "sql_server" and not conn.get("username", "").strip():
+            raise ConfigError("Debes indicar el usuario para autenticación SQL Server.")
+        if not isinstance(conn.get("timeout"), int) or conn["timeout"] < 1:
+            raise ConfigError("El timeout debe ser un número entero de segundos (mínimo 1).")
+
+    def delete(self, name):
+        conn = self.find_by_name(name)
+        if conn and conn.get("password_ref"):
+            delete_password(conn["password_ref"])
+        super().delete(name)
+
+
+class QueryConfigStore(JsonListStore):
     def _validate(self, query):
         if not query.get("name", "").strip():
             raise ConfigError("El nombre de la consulta es obligatorio.")
@@ -181,6 +254,10 @@ class QueryConfigStore:
                 f"La consulta tiene {placeholder_count} parámetro(s) '?' pero se definieron "
                 f"{len(params)}. Deben coincidir en cantidad y orden."
             )
+
+        allowed = query.get("allowed_connections", [])
+        if not isinstance(allowed, list) or any(not isinstance(n, str) for n in allowed):
+            raise ConfigError("'allowed_connections' debe ser una lista de nombres de conexión.")
 
 
 def convert_param_value(raw_value, param):
@@ -209,35 +286,49 @@ def convert_param_value(raw_value, param):
 # ==========================================
 # ACCESO A DATOS
 # ==========================================
-def build_connection_string():
-    driver = DB_CONFIG["driver"]
-    server = DB_CONFIG["server"]
-    database = DB_CONFIG["database"]
+def build_connection_string(conn_cfg, password=None):
+    """Arma el connection string de pyodbc para una conexión guardada.
+    'password' permite probar con una contraseña recién digitada sin guardarla."""
+    name = conn_cfg.get("name", "?")
+    driver = conn_cfg.get("driver", "").strip()
+    server = conn_cfg.get("server", "").strip()
+    database = conn_cfg.get("database", "").strip()
 
-    if not driver:
-        raise ValueError("Falta configurar DB_DRIVER en el archivo .env.")
-    if not server:
-        raise ValueError("Falta configurar DB_SERVER en el archivo .env.")
-    if not database:
-        raise ValueError("Falta configurar DB_DATABASE en el archivo .env.")
+    if not driver or not server or not database:
+        raise ValueError(f"La conexión '{name}' está incompleta (driver, servidor o base de datos).")
 
-    if DB_CONFIG["use_windows_auth"]:
-        return (
-            f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
-            f"Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes;"
-        )
-
-    username = DB_CONFIG["username"]
-    password = DB_CONFIG["password"]
-    if not username or not password:
-        raise ValueError(
-            "Debes configurar DB_USER y DB_PASSWORD en el .env cuando DB_WINDOWS_AUTH=False."
-        )
-
-    return (
+    base = (
         f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
-        f"UID={username};PWD={password};Encrypt=yes;TrustServerCertificate=yes;"
+        f"Encrypt=yes;TrustServerCertificate=yes;"
     )
+
+    if conn_cfg.get("auth_type") == "windows":
+        return base + "Trusted_Connection=yes;"
+
+    username = conn_cfg.get("username", "").strip()
+    pwd = password or get_password(conn_cfg.get("password_ref", ""))
+
+    if not username:
+        raise ValueError(f"La conexión '{name}' no tiene usuario configurado.")
+    if not pwd:
+        raise ValueError(
+            f"La conexión '{name}' no tiene contraseña guardada en el almacén de credenciales. "
+            "Edita la conexión y vuelve a ingresar la contraseña."
+        )
+
+    return base + f"UID={username};PWD={pwd};"
+
+
+def test_connection(conn_cfg, password=None):
+    """Abre la conexión y ejecuta SELECT 1. Lanza excepción si algo falla."""
+    conn = pyodbc.connect(
+        build_connection_string(conn_cfg, password),
+        timeout=conn_cfg.get("timeout", 5),
+    )
+    try:
+        conn.cursor().execute("SELECT 1").fetchone()
+    finally:
+        conn.close()
 
 
 def normalize_value(value):
@@ -255,8 +346,11 @@ def normalize_value(value):
     return value
 
 
-def fetch_query_data(conn_str, sql, params):
-    conn = pyodbc.connect(conn_str, timeout=DB_CONFIG["timeout"])
+def fetch_query_data(conn_cfg, sql, params):
+    conn = pyodbc.connect(
+        build_connection_string(conn_cfg),
+        timeout=conn_cfg.get("timeout", 5),
+    )
     try:
         cursor = conn.cursor()
         cursor.execute(sql, params)
@@ -288,19 +382,234 @@ def generate_qr_image(text_data):
 
 
 # ==========================================
-# DIÁLOGO: CREAR / EDITAR CONSULTA
+# DIÁLOGO: CREAR / EDITAR CONEXIÓN
 # ==========================================
-class QueryEditorDialog(tk.Toplevel):
+class ConnectionEditorDialog(tk.Toplevel):
     def __init__(self, parent, store, existing=None, on_saved=None):
         super().__init__(parent)
         self.store = store
         self.existing = existing
         self.on_saved = on_saved
         self.original_name = existing["name"] if existing else None
+        self.is_testing = False
+
+        self.title("Editar conexión" if existing else "Nueva conexión")
+        self.geometry("600x440")
+        self.transient(parent)
+        self.grab_set()
+
+        self._build_ui()
+        if existing:
+            self._load_existing()
+        self._sync_auth_fields()
+
+    def _build_ui(self):
+        pad = {"padx": 8, "pady": 4}
+        frm = ttk.Frame(self, padding=10)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="Nombre:").grid(row=0, column=0, sticky="w", **pad)
+        self.name_var = tk.StringVar()
+        ttk.Entry(frm, textvariable=self.name_var, width=45).grid(row=0, column=1, columnspan=2, sticky="we", **pad)
+
+        ttk.Label(frm, text="Driver ODBC:").grid(row=1, column=0, sticky="w", **pad)
+        self.driver_var = tk.StringVar(value="ODBC Driver 17 for SQL Server")
+        ttk.Entry(frm, textvariable=self.driver_var, width=45).grid(row=1, column=1, columnspan=2, sticky="we", **pad)
+
+        ttk.Label(frm, text="Servidor:").grid(row=2, column=0, sticky="w", **pad)
+        self.server_var = tk.StringVar()
+        ttk.Entry(frm, textvariable=self.server_var, width=45).grid(row=2, column=1, columnspan=2, sticky="we", **pad)
+
+        ttk.Label(frm, text="Base de datos:").grid(row=3, column=0, sticky="w", **pad)
+        self.database_var = tk.StringVar()
+        ttk.Entry(frm, textvariable=self.database_var, width=45).grid(row=3, column=1, columnspan=2, sticky="we", **pad)
+
+        ttk.Label(frm, text="Autenticación:").grid(row=4, column=0, sticky="w", **pad)
+        self.auth_var = tk.StringVar(value="sql_server")
+        ttk.Radiobutton(
+            frm, text="Usuario SQL Server", value="sql_server",
+            variable=self.auth_var, command=self._sync_auth_fields
+        ).grid(row=4, column=1, sticky="w", **pad)
+        ttk.Radiobutton(
+            frm, text="Autenticación de Windows", value="windows",
+            variable=self.auth_var, command=self._sync_auth_fields
+        ).grid(row=4, column=2, sticky="w", **pad)
+
+        ttk.Label(frm, text="Usuario:").grid(row=5, column=0, sticky="w", **pad)
+        self.user_var = tk.StringVar()
+        self.user_entry = ttk.Entry(frm, textvariable=self.user_var, width=30)
+        self.user_entry.grid(row=5, column=1, sticky="w", **pad)
+
+        ttk.Label(frm, text="Contraseña:").grid(row=6, column=0, sticky="w", **pad)
+        # Nunca se muestra la contraseña guardada: el campo siempre inicia vacío
+        # y en edición dejarlo vacío significa "conservar la actual".
+        self.password_entry = ttk.Entry(frm, show="*", width=30)
+        self.password_entry.grid(row=6, column=1, sticky="w", **pad)
+        hint = "(dejar vacío para conservar la actual)" if self.existing else ""
+        self.password_hint = ttk.Label(frm, text=hint, foreground="#555")
+        self.password_hint.grid(row=6, column=2, sticky="w", **pad)
+
+        ttk.Label(frm, text="Timeout (segundos):").grid(row=7, column=0, sticky="w", **pad)
+        self.timeout_var = tk.StringVar(value="5")
+        ttk.Entry(frm, textvariable=self.timeout_var, width=8).grid(row=7, column=1, sticky="w", **pad)
+
+        self.active_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(frm, text="Conexión activa", variable=self.active_var).grid(
+            row=8, column=0, columnspan=2, sticky="w", **pad
+        )
+
+        frm.columnconfigure(1, weight=1)
+
+        btns = ttk.Frame(self, padding=10)
+        btns.pack(fill="x", side="bottom")
+        self.test_button = ttk.Button(btns, text="Probar conexión", command=self.on_test)
+        self.test_button.pack(side="left", padx=4)
+        ttk.Button(btns, text="Guardar", command=self.on_save).pack(side="right", padx=4)
+        ttk.Button(btns, text="Cancelar", command=self.destroy).pack(side="right", padx=4)
+
+    def _sync_auth_fields(self):
+        state = "normal" if self.auth_var.get() == "sql_server" else "disabled"
+        self.user_entry.config(state=state)
+        self.password_entry.config(state=state)
+
+    def _load_existing(self):
+        self.name_var.set(self.existing["name"])
+        self.driver_var.set(self.existing.get("driver", ""))
+        self.server_var.set(self.existing.get("server", ""))
+        self.database_var.set(self.existing.get("database", ""))
+        self.auth_var.set(self.existing.get("auth_type", "sql_server"))
+        self.user_var.set(self.existing.get("username", ""))
+        self.timeout_var.set(str(self.existing.get("timeout", 5)))
+        self.active_var.set(self.existing.get("active", True))
+
+    def _collect_config(self):
+        try:
+            timeout = int(self.timeout_var.get().strip() or "5")
+        except ValueError:
+            raise ConfigError("El timeout debe ser un número entero de segundos.")
+
+        return {
+            "name": self.name_var.get().strip(),
+            "driver": self.driver_var.get().strip(),
+            "server": self.server_var.get().strip(),
+            "database": self.database_var.get().strip(),
+            "auth_type": self.auth_var.get(),
+            "username": self.user_var.get().strip(),
+            "password_ref": (self.existing or {}).get("password_ref", ""),
+            "timeout": timeout,
+            "active": self.active_var.get(),
+        }
+
+    def on_test(self):
+        if self.is_testing:
+            return
+        try:
+            cfg = self._collect_config()
+            self.store._validate(cfg)
+        except ConfigError as e:
+            messagebox.showerror("Datos incompletos", str(e), parent=self)
+            return
+
+        typed = self.password_entry.get() or None
+        if cfg["auth_type"] == "sql_server" and not typed and not get_password(cfg["password_ref"]):
+            messagebox.showerror(
+                "Falta la contraseña",
+                "Ingresa la contraseña para poder probar la conexión.",
+                parent=self,
+            )
+            return
+
+        self.is_testing = True
+        self.test_button.config(state="disabled", text="Probando...")
+        threading.Thread(target=self._test_thread, args=(cfg, typed), daemon=True).start()
+
+    def _test_thread(self, cfg, password):
+        try:
+            test_connection(cfg, password)
+            error = None
+        except Exception as e:
+            logging.exception("Prueba de conexión fallida ('%s')", cfg.get("name"))
+            error = str(e)
+        self.after(0, lambda: self._test_done(error))
+
+    def _test_done(self, error):
+        if not self.winfo_exists():
+            return
+        self.is_testing = False
+        self.test_button.config(state="normal", text="Probar conexión")
+        if error is None:
+            messagebox.showinfo("Prueba de conexión", "Conexión exitosa.", parent=self)
+        else:
+            messagebox.showerror(
+                "Prueba de conexión", f"No se pudo conectar:\n{error[:400]}", parent=self
+            )
+
+    def on_save(self):
+        try:
+            cfg = self._collect_config()
+        except ConfigError as e:
+            messagebox.showerror("No se puede guardar", str(e), parent=self)
+            return
+
+        typed = self.password_entry.get()
+
+        if cfg["auth_type"] == "sql_server":
+            ref = cfg["password_ref"] or uuid.uuid4().hex
+            if not typed and not get_password(ref):
+                messagebox.showerror(
+                    "No se puede guardar",
+                    "Debes ingresar la contraseña para esta conexión.",
+                    parent=self,
+                )
+                return
+            cfg["password_ref"] = ref
+        else:
+            # Al pasar a autenticación de Windows, limpiar la credencial almacenada.
+            if cfg["password_ref"]:
+                delete_password(cfg["password_ref"])
+            cfg["password_ref"] = ""
+
+        try:
+            if self.original_name:
+                self.store.update(self.original_name, cfg)
+            else:
+                self.store.add(cfg)
+        except ConfigError as e:
+            messagebox.showerror("No se puede guardar", str(e), parent=self)
+            return
+
+        if cfg["auth_type"] == "sql_server" and typed:
+            try:
+                save_password(cfg["password_ref"], typed)
+            except Exception:
+                logging.exception("No se pudo guardar la contraseña en el almacén de Windows")
+                messagebox.showerror(
+                    "Contraseña no guardada",
+                    "La conexión se guardó, pero no se pudo guardar la contraseña en el "
+                    "Administrador de credenciales de Windows. Edita la conexión e inténtalo de nuevo.",
+                    parent=self,
+                )
+
+        if self.on_saved:
+            self.on_saved(cfg["name"])
+        self.destroy()
+
+
+# ==========================================
+# DIÁLOGO: CREAR / EDITAR CONSULTA
+# ==========================================
+class QueryEditorDialog(tk.Toplevel):
+    def __init__(self, parent, store, connection_names=None, existing=None, on_saved=None):
+        super().__init__(parent)
+        self.store = store
+        self.connection_names = connection_names or []
+        self.existing = existing
+        self.on_saved = on_saved
+        self.original_name = existing["name"] if existing else None
         self.param_rows = []
 
         self.title("Editar consulta" if existing else "Nueva consulta")
-        self.geometry("720x640")
+        self.geometry("720x700")
         self.transient(parent)
         self.grab_set()
 
@@ -338,6 +647,21 @@ class QueryEditorDialog(tk.Toplevel):
         sql_frame.pack(fill="both", expand=True, padx=10, pady=(0, 8))
         self.sql_text = tk.Text(sql_frame, height=8, wrap="word")
         self.sql_text.pack(fill="both", expand=True)
+
+        allowed_frame = ttk.LabelFrame(
+            self, text="Conexiones permitidas (ninguna marcada = todas)", padding=8
+        )
+        allowed_frame.pack(fill="x", padx=10, pady=(0, 8))
+
+        self.allowed_vars = []
+        for i, cname in enumerate(self.connection_names):
+            var = tk.BooleanVar(value=False)
+            ttk.Checkbutton(allowed_frame, text=cname, variable=var).grid(
+                row=i // 3, column=i % 3, sticky="w", padx=4, pady=2
+            )
+            self.allowed_vars.append((cname, var))
+        if not self.connection_names:
+            ttk.Label(allowed_frame, text="No hay conexiones definidas todavía.").pack(anchor="w")
 
         params_frame = ttk.LabelFrame(
             self, text="Parámetros (mismo orden que los '?' de la consulta)", padding=8
@@ -388,16 +712,27 @@ class QueryEditorDialog(tk.Toplevel):
         self.sql_text.insert("1.0", self.existing.get("sql", ""))
         self.generate_qr_var.set(self.existing.get("generate_qr", True))
         self.active_var.set(self.existing.get("active", True))
+        existing_allowed = self.existing.get("allowed_connections") or []
+        for cname, var in self.allowed_vars:
+            var.set(cname in existing_allowed)
         for p in self.existing.get("params", []):
             self.add_param_row(p)
 
     def on_save(self):
+        checked = [cname for cname, var in self.allowed_vars if var.get()]
+        # Conservar nombres permitidos que apunten a conexiones hoy inexistentes
+        # (p. ej. definidas en otro equipo) en vez de perderlos silenciosamente.
+        known = [cname for cname, _ in self.allowed_vars]
+        existing_allowed = (self.existing or {}).get("allowed_connections") or []
+        allowed = checked + [n for n in existing_allowed if n not in known]
+
         query = {
             "name": self.name_var.get().strip(),
             "description": self.desc_var.get().strip(),
             "sql": self.sql_text.get("1.0", "end").strip(),
             "generate_qr": self.generate_qr_var.get(),
             "active": self.active_var.get(),
+            "allowed_connections": allowed,
             "params": [
                 {
                     "name": r["name"].get().strip(),
@@ -415,11 +750,11 @@ class QueryEditorDialog(tk.Toplevel):
             else:
                 self.store.add(query)
         except (ConfigError, SQLSecurityError) as e:
-            messagebox.showerror("No se puede guardar", str(e))
+            messagebox.showerror("No se puede guardar", str(e), parent=self)
             return
 
         if self.on_saved:
-            self.on_saved()
+            self.on_saved(query["name"])
         self.destroy()
 
 
@@ -431,9 +766,9 @@ class DynamicQueryApp:
         self.root = root
         self.root.title("Sucroal - Consultas Dinámicas SQL (solo lectura)")
         # ponytail: cap la altura inicial a la pantalla real, así el QR (al final de la
-        # ventana) no queda cortado en portátiles con menos de 820px de alto disponibles.
+        # ventana) no queda cortado en portátiles con menos de 900px de alto disponibles.
         screen_height = self.root.winfo_screenheight()
-        window_height = min(820, screen_height - 100)
+        window_height = min(900, screen_height - 100)
         self.root.geometry(f"1000x{window_height}")
         self.root.minsize(800, min(620, window_height))
 
@@ -442,18 +777,44 @@ class DynamicQueryApp:
         self.is_query_running = False
         self.param_widgets = []
 
-        self.store = QueryConfigStore()
-        if self.store.load_error:
-            messagebox.showerror("Error de configuración", self.store.load_error)
+        self.conn_store = DatabaseConnectionStore(CONNECTIONS_FILE)
+        self.store = QueryConfigStore(QUERIES_FILE)
+        for s in (self.conn_store, self.store):
+            if s.load_error:
+                messagebox.showerror("Error de configuración", s.load_error)
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.bind("<Configure>", self._on_window_resize)
-        self.refresh_query_list()
+        self.refresh_connection_list()
 
     def _build_ui(self):
         main = ttk.Frame(self.root, padding=12)
         main.pack(fill="both", expand=True)
+
+        conn_frame = ttk.LabelFrame(main, text="Conexión / base de datos", padding=10)
+        conn_frame.pack(fill="x", pady=(0, 10))
+
+        self.conn_var = tk.StringVar()
+        self.conn_combo = ttk.Combobox(
+            conn_frame, textvariable=self.conn_var, state="readonly", width=40
+        )
+        self.conn_combo.grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        self.conn_combo.bind("<<ComboboxSelected>>", lambda e: self.on_connection_selected())
+
+        new_conn_btn = ttk.Button(conn_frame, text="Nueva conexión", command=self.new_connection)
+        new_conn_btn.grid(row=0, column=1, padx=5)
+        edit_conn_btn = ttk.Button(conn_frame, text="Editar conexión", command=self.edit_connection)
+        edit_conn_btn.grid(row=0, column=2, padx=5)
+        del_conn_btn = ttk.Button(conn_frame, text="Eliminar conexión", command=self.delete_connection)
+        del_conn_btn.grid(row=0, column=3, padx=5)
+        test_conn_btn = ttk.Button(conn_frame, text="Probar conexión", command=self.test_selected_connection)
+        test_conn_btn.grid(row=0, column=4, padx=5)
+
+        self.conn_info_var = tk.StringVar()
+        ttk.Label(conn_frame, textvariable=self.conn_info_var, foreground="#555").grid(
+            row=1, column=0, columnspan=5, sticky="w", padx=5
+        )
 
         selector_frame = ttk.LabelFrame(main, text="Consulta guardada", padding=10)
         selector_frame.pack(fill="x", pady=(0, 10))
@@ -465,9 +826,12 @@ class DynamicQueryApp:
         self.query_combo.grid(row=0, column=0, sticky="w", padx=5, pady=5)
         self.query_combo.bind("<<ComboboxSelected>>", lambda e: self.on_query_selected())
 
-        ttk.Button(selector_frame, text="Nueva consulta", command=self.new_query).grid(row=0, column=1, padx=5)
-        ttk.Button(selector_frame, text="Editar consulta", command=self.edit_query).grid(row=0, column=2, padx=5)
-        ttk.Button(selector_frame, text="Eliminar consulta", command=self.delete_query).grid(row=0, column=3, padx=5)
+        new_query_btn = ttk.Button(selector_frame, text="Nueva consulta", command=self.new_query)
+        new_query_btn.grid(row=0, column=1, padx=5)
+        edit_query_btn = ttk.Button(selector_frame, text="Editar consulta", command=self.edit_query)
+        edit_query_btn.grid(row=0, column=2, padx=5)
+        del_query_btn = ttk.Button(selector_frame, text="Eliminar consulta", command=self.delete_query)
+        del_query_btn.grid(row=0, column=3, padx=5)
 
         self.desc_var = tk.StringVar()
         ttk.Label(selector_frame, textvariable=self.desc_var, foreground="#555").grid(
@@ -492,6 +856,13 @@ class DynamicQueryApp:
         self.status_var = tk.StringVar(value="Listo")
         ttk.Label(action_frame, textvariable=self.status_var).pack(side="left", padx=15)
 
+        # Todos los botones que se bloquean mientras hay una operación en curso.
+        self.action_buttons = [
+            new_conn_btn, edit_conn_btn, del_conn_btn, test_conn_btn,
+            new_query_btn, edit_query_btn, del_query_btn,
+            self.run_button, self.clear_button,
+        ]
+
         result_frame = ttk.LabelFrame(main, text="Resultado JSON", padding=10)
         result_frame.pack(fill="x", expand=False, pady=(0, 10))
         text_container = ttk.Frame(result_frame)
@@ -507,9 +878,100 @@ class DynamicQueryApp:
         self.qr_label = ttk.Label(qr_frame, text="Aquí aparecerá el QR", anchor="center")
         self.qr_label.pack(fill="both", expand=True)
 
+    # --- gestión de conexiones ---
+    def refresh_connection_list(self, select_name=None):
+        names = [c["name"] for c in self.conn_store.active_items()]
+        self.conn_combo["values"] = names
+        current = self.conn_var.get()
+        if select_name and select_name in names:
+            self.conn_var.set(select_name)
+        elif current in names:
+            pass  # conservar la selección actual
+        elif names:
+            self.conn_var.set(names[0])
+        else:
+            self.conn_var.set("")
+        self.on_connection_selected()
+
+    def get_selected_connection(self):
+        name = self.conn_var.get()
+        return self.conn_store.find_by_name(name) if name else None
+
+    def on_connection_selected(self):
+        conn = self.get_selected_connection()
+        if conn:
+            auth = "Windows" if conn.get("auth_type") == "windows" else f"SQL ({conn.get('username', '')})"
+            self.conn_info_var.set(
+                f"{conn.get('server', '')}  /  {conn.get('database', '')}  —  Autenticación: {auth}"
+            )
+        elif not self.conn_store.active_items():
+            self.conn_info_var.set("No hay conexiones. Crea una con 'Nueva conexión'.")
+        else:
+            self.conn_info_var.set("")
+        self.refresh_query_list(select_name=self.query_var.get() or None)
+
+    def new_connection(self):
+        ConnectionEditorDialog(
+            self.root, self.conn_store,
+            on_saved=lambda name: self.refresh_connection_list(select_name=name),
+        )
+
+    def edit_connection(self):
+        conn = self.get_selected_connection()
+        if not conn:
+            messagebox.showinfo("Editar conexión", "Selecciona una conexión primero.")
+            return
+        ConnectionEditorDialog(
+            self.root, self.conn_store, existing=conn,
+            on_saved=lambda name: self.refresh_connection_list(select_name=name),
+        )
+
+    def delete_connection(self):
+        conn = self.get_selected_connection()
+        if not conn:
+            messagebox.showinfo("Eliminar conexión", "Selecciona una conexión primero.")
+            return
+        if messagebox.askyesno(
+            "Eliminar conexión",
+            f"¿Eliminar la conexión '{conn['name']}'?\n"
+            "También se eliminará su contraseña guardada.",
+        ):
+            self.conn_store.delete(conn["name"])
+            self.refresh_connection_list()
+
+    def test_selected_connection(self):
+        if self.is_query_running:
+            return
+        conn = self.get_selected_connection()
+        if not conn:
+            messagebox.showinfo("Probar conexión", "Selecciona una conexión primero.")
+            return
+        self.set_loading_state(True, "Probando conexión...")
+        threading.Thread(target=self._test_connection_thread, args=(conn,), daemon=True).start()
+
+    def _test_connection_thread(self, conn_cfg):
+        try:
+            test_connection(conn_cfg)
+            error = None
+        except Exception as e:
+            logging.exception("Prueba de conexión fallida ('%s')", conn_cfg.get("name"))
+            error = str(e)
+        self.root.after(0, lambda: self._test_connection_done(conn_cfg["name"], error))
+
+    def _test_connection_done(self, name, error):
+        self.set_loading_state(False, "Listo")
+        if error is None:
+            messagebox.showinfo("Probar conexión", f"Conexión exitosa a '{name}'.")
+        else:
+            messagebox.showerror("Probar conexión", f"No se pudo conectar:\n{error[:400]}")
+
     # --- gestión de la lista de consultas ---
     def refresh_query_list(self, select_name=None):
-        names = [q["name"] for q in self.store.active_queries()]
+        conn_name = self.conn_var.get()
+        queries = self.store.active_items()
+        if conn_name:
+            queries = [q for q in queries if query_allowed_on(q, conn_name)]
+        names = [q["name"] for q in queries]
         self.query_combo["values"] = names
         if select_name and select_name in names:
             self.query_var.set(select_name)
@@ -558,9 +1020,15 @@ class DynamicQueryApp:
             )
             self.param_widgets.append((param, var))
 
-    # --- CRUD ---
+    # --- CRUD de consultas ---
+    def _connection_names(self):
+        return [c["name"] for c in self.conn_store.items]
+
     def new_query(self):
-        QueryEditorDialog(self.root, self.store, on_saved=self.refresh_query_list)
+        QueryEditorDialog(
+            self.root, self.store, connection_names=self._connection_names(),
+            on_saved=lambda name: self.refresh_query_list(select_name=name),
+        )
 
     def edit_query(self):
         query = self.get_selected_query()
@@ -568,8 +1036,8 @@ class DynamicQueryApp:
             messagebox.showinfo("Editar consulta", "Selecciona una consulta primero.")
             return
         QueryEditorDialog(
-            self.root, self.store, existing=query,
-            on_saved=lambda: self.refresh_query_list(select_name=query["name"])
+            self.root, self.store, connection_names=self._connection_names(), existing=query,
+            on_saved=lambda name: self.refresh_query_list(select_name=name),
         )
 
     def delete_query(self):
@@ -592,9 +1060,11 @@ class DynamicQueryApp:
     def set_loading_state(self, is_loading, message="Listo"):
         self.is_query_running = is_loading
         state = "disabled" if is_loading else "normal"
-        self.run_button.config(state=state)
-        self.clear_button.config(state=state)
-        self.query_combo.config(state="disabled" if is_loading else "readonly")
+        for btn in self.action_buttons:
+            btn.config(state=state)
+        combo_state = "disabled" if is_loading else "readonly"
+        self.query_combo.config(state=combo_state)
+        self.conn_combo.config(state=combo_state)
         self.status_var.set(message)
 
     def clear_result_and_qr(self):
@@ -619,9 +1089,21 @@ class DynamicQueryApp:
         if self.is_query_running:
             return
 
+        conn_cfg = self.get_selected_connection()
+        if not conn_cfg:
+            messagebox.showinfo("Ejecutar consulta", "Selecciona una conexión primero.")
+            return
+
         query = self.get_selected_query()
         if not query:
             messagebox.showinfo("Ejecutar consulta", "Selecciona una consulta primero.")
+            return
+
+        if not query_allowed_on(query, conn_cfg["name"]):
+            messagebox.showerror(
+                "Consulta no permitida",
+                f"La consulta '{query['name']}' no está permitida en la conexión '{conn_cfg['name']}'.",
+            )
             return
 
         try:
@@ -650,15 +1132,14 @@ class DynamicQueryApp:
 
         self.set_loading_state(True, "Consultando...")
         thread = threading.Thread(
-            target=self._run_query_thread, args=(query, params_values), daemon=True
+            target=self._run_query_thread, args=(conn_cfg, query, params_values), daemon=True
         )
         thread.start()
 
-    def _run_query_thread(self, query, params_values):
+    def _run_query_thread(self, conn_cfg, query, params_values):
         try:
-            logging.info("Ejecutando consulta '%s'", query["name"])
-            conn_str = build_connection_string()
-            rows, truncated = fetch_query_data(conn_str, query["sql"], params_values)
+            logging.info("Ejecutando consulta '%s' en conexión '%s'", query["name"], conn_cfg["name"])
+            rows, truncated = fetch_query_data(conn_cfg, query["sql"], params_values)
             self.root.after(0, lambda: self.handle_query_success(query, rows, truncated))
 
         except pyodbc.InterfaceError:

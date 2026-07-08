@@ -12,7 +12,8 @@
       }
     ],
     "generate_qr": false,
-    "active": true
+    "active": true,
+    "allowed_connections": []
   },
   {
     "name": "Pedido por número",
@@ -27,6 +28,7 @@
       }
     ],
     "generate_qr": true,
-    "active": true
+    "active": true,
+    "allowed_connections": ["Producción Báscula"]
   }
 ]
