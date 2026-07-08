@@ -44,7 +44,7 @@ AUTH_TYPES = ["windows", "sql_server"]
 
 # Servicio bajo el cual se guardan las contraseñas en el
 # Administrador de credenciales de Windows (vía keyring).
-KEYRING_SERVICE = "SucroalConsultasDinamicas"
+KEYRING_SERVICE = "ConsultasDinamicasSQL"
 
 
 class SQLSecurityError(Exception):
@@ -764,7 +764,7 @@ class QueryEditorDialog(tk.Toplevel):
 class DynamicQueryApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Sucroal - Consultas Dinámicas SQL (solo lectura)")
+        self.root.title("Consultas Dinámicas SQL (solo lectura)")
         # ponytail: cap la altura inicial a la pantalla real, así el QR (al final de la
         # ventana) no queda cortado en portátiles con menos de 900px de alto disponibles.
         screen_height = self.root.winfo_screenheight()
