@@ -148,7 +148,7 @@ Con **"Nueva conexión"** se abre un formulario para definir una conexión sin t
 
 ![Formulario de conexión](assets/02-nueva-conexion.png)
 
-- **Nombre**: como aparecerá en el selector de conexiones (por ejemplo, "Producción Báscula").
+- **Nombre**: como aparecerá en el selector de conexiones (por ejemplo, "Producción").
 - **Driver ODBC**, **Servidor** y **Base de datos**: datos de conexión a SQL Server.
 - **Autenticación**: usuario SQL Server (usuario + contraseña) o autenticación de Windows
   (usa la sesión actual, sin usuario/clave).

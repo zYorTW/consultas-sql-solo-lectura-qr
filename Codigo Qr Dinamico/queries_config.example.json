@@ -29,6 +29,6 @@
     ],
     "generate_qr": true,
     "active": true,
-    "allowed_connections": ["Producción Báscula"]
+    "allowed_connections": ["Producción"]
   }
 ]
