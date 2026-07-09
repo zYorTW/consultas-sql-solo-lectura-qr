@@ -1172,7 +1172,7 @@ class DynamicQueryApp:
                 try:
                     self.qr_image_pil = generate_qr_image(payload)
                     self.refresh_qr_display()
-                except DataOverflowError:
+                except (DataOverflowError, ValueError):
                     self.qr_label.config(image="", text="El resultado es demasiado grande para un QR.")
                     self.qr_photo = None
                     self.qr_image_pil = None
