@@ -956,7 +956,7 @@ class DynamicQueryApp:
             return
         ConnectionEditorDialog(
             self.root, self.conn_store, existing=conn,
-            on_saved=lambda name: self.refresh_connection_list(select_name=name),
+            on_saved=lambda name: self.refresh_connection_list(select_name=name, auto_select=False),
         )
 
     def delete_connection(self):
