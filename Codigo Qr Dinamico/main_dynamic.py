@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import tkinter as tk
 import uuid
@@ -20,10 +21,15 @@ from dotenv import load_dotenv
 # ==========================================
 # CONFIGURACIÓN DE ENTORNO Y LOGGING
 # ==========================================
-load_dotenv()
+# ponytail: anchor config/log paths to this script's own folder (not cwd) so
+# behavior doesn't depend on how the app is launched (editor Run button,
+# double-clicked .exe, or `python main_dynamic.py` from a different folder).
+BASE_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 
-CONNECTIONS_FILE = os.getenv("CONNECTIONS_FILE", "db_connections.json")
-QUERIES_FILE = os.getenv("QUERIES_FILE", "queries_config.json")
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+CONNECTIONS_FILE = os.getenv("CONNECTIONS_FILE", os.path.join(BASE_DIR, "db_connections.json"))
+QUERIES_FILE = os.getenv("QUERIES_FILE", os.path.join(BASE_DIR, "queries_config.json"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 
 try:
@@ -35,7 +41,9 @@ logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
-        RotatingFileHandler("app.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8")
+        RotatingFileHandler(
+            os.path.join(BASE_DIR, "app.log"), maxBytes=2_000_000, backupCount=5, encoding="utf-8"
+        )
     ],
 )
 
@@ -758,6 +766,34 @@ class QueryEditorDialog(tk.Toplevel):
         self.destroy()
 
 
+class QrDisplayDialog(tk.Toplevel):
+    def __init__(self, parent, image_pil):
+        super().__init__(parent)
+        self.image_pil = image_pil
+        self.photo = None
+
+        self.title("Código QR")
+        self.geometry("420x460")
+        self.minsize(280, 320)
+        self.transient(parent)
+        self.grab_set()
+
+        self.qr_label = ttk.Label(self, anchor="center")
+        self.qr_label.pack(fill="both", expand=True, padx=15, pady=15)
+        ttk.Button(self, text="Cerrar", command=self.destroy).pack(pady=(0, 15))
+
+        self.bind("<Configure>", lambda e: self._render())
+        self.after(10, self._render)
+
+    def _render(self):
+        self.update_idletasks()
+        size = min(self.qr_label.winfo_width(), self.qr_label.winfo_height())
+        size = max(150, min(size, 600))
+        img_resized = self.image_pil.copy().resize((size, size), Image.Resampling.NEAREST)
+        self.photo = ImageTk.PhotoImage(img_resized)
+        self.qr_label.config(image=self.photo)
+
+
 # ==========================================
 # APLICACIÓN PRINCIPAL
 # ==========================================
@@ -765,15 +801,15 @@ class DynamicQueryApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Consultas Dinámicas SQL (solo lectura)")
-        # ponytail: cap la altura inicial a la pantalla real, así el QR (al final de la
-        # ventana) no queda cortado en portátiles con menos de 900px de alto disponibles.
+        # ponytail: cap la altura inicial a la pantalla real, así la ventana no queda
+        # cortada en portátiles con menos de 900px de alto disponibles.
         screen_height = self.root.winfo_screenheight()
         window_height = min(900, screen_height - 100)
         self.root.geometry(f"1000x{window_height}")
         self.root.minsize(800, min(620, window_height))
 
-        self.qr_photo = None
-        self.qr_image_pil = None
+        self.last_rows = None
+        self.last_query = None
         self.is_query_running = False
         self.param_widgets = []
 
@@ -785,8 +821,7 @@ class DynamicQueryApp:
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.root.bind("<Configure>", self._on_window_resize)
-        self.refresh_connection_list()
+        self.refresh_connection_list(auto_select=False)
 
     def _build_ui(self):
         main = ttk.Frame(self.root, padding=12)
@@ -800,7 +835,7 @@ class DynamicQueryApp:
             conn_frame, textvariable=self.conn_var, state="readonly", width=40
         )
         self.conn_combo.grid(row=0, column=0, sticky="w", padx=5, pady=5)
-        self.conn_combo.bind("<<ComboboxSelected>>", lambda e: self.on_connection_selected())
+        self.conn_combo.bind("<<ComboboxSelected>>", lambda e: self.on_connection_selected(auto_select=False))
 
         new_conn_btn = ttk.Button(conn_frame, text="Nueva conexión", command=self.new_connection)
         new_conn_btn.grid(row=0, column=1, padx=5)
@@ -852,6 +887,9 @@ class DynamicQueryApp:
         self.run_button.pack(side="left", padx=5)
         self.clear_button = ttk.Button(action_frame, text="Limpiar", command=self.clear_all)
         self.clear_button.pack(side="left", padx=5)
+        self.qr_button = ttk.Button(action_frame, text="Generar QR", command=self.generate_qr_from_result)
+        self.qr_button.pack(side="left", padx=5)
+        self.qr_button.config(state="disabled")
 
         self.status_var = tk.StringVar(value="Listo")
         ttk.Label(action_frame, textvariable=self.status_var).pack(side="left", padx=15)
@@ -860,11 +898,11 @@ class DynamicQueryApp:
         self.action_buttons = [
             new_conn_btn, edit_conn_btn, del_conn_btn, test_conn_btn,
             new_query_btn, edit_query_btn, del_query_btn,
-            self.run_button, self.clear_button,
+            self.run_button, self.clear_button, self.qr_button,
         ]
 
         result_frame = ttk.LabelFrame(main, text="Resultado JSON", padding=10)
-        result_frame.pack(fill="x", expand=False, pady=(0, 10))
+        result_frame.pack(fill="both", expand=True, pady=(0, 10))
         text_container = ttk.Frame(result_frame)
         text_container.pack(fill="both", expand=True)
         self.result_text = tk.Text(text_container, height=6, wrap="word", state="disabled")
@@ -873,13 +911,8 @@ class DynamicQueryApp:
         self.result_text.pack(side="left", fill="both", expand=True)
         result_scroll.pack(side="right", fill="y")
 
-        qr_frame = ttk.LabelFrame(main, text="Código QR", padding=10)
-        qr_frame.pack(fill="both", expand=True)
-        self.qr_label = ttk.Label(qr_frame, text="Aquí aparecerá el QR", anchor="center")
-        self.qr_label.pack(fill="both", expand=True)
-
     # --- gestión de conexiones ---
-    def refresh_connection_list(self, select_name=None):
+    def refresh_connection_list(self, select_name=None, auto_select=True):
         names = [c["name"] for c in self.conn_store.active_items()]
         self.conn_combo["values"] = names
         current = self.conn_var.get()
@@ -887,17 +920,17 @@ class DynamicQueryApp:
             self.conn_var.set(select_name)
         elif current in names:
             pass  # conservar la selección actual
-        elif names:
+        elif names and auto_select:
             self.conn_var.set(names[0])
         else:
             self.conn_var.set("")
-        self.on_connection_selected()
+        self.on_connection_selected(auto_select=auto_select)
 
     def get_selected_connection(self):
         name = self.conn_var.get()
         return self.conn_store.find_by_name(name) if name else None
 
-    def on_connection_selected(self):
+    def on_connection_selected(self, auto_select=True):
         conn = self.get_selected_connection()
         if conn:
             auth = "Windows" if conn.get("auth_type") == "windows" else f"SQL ({conn.get('username', '')})"
@@ -908,7 +941,7 @@ class DynamicQueryApp:
             self.conn_info_var.set("No hay conexiones. Crea una con 'Nueva conexión'.")
         else:
             self.conn_info_var.set("")
-        self.refresh_query_list(select_name=self.query_var.get() or None)
+        self.refresh_query_list(select_name=self.query_var.get() or None, auto_select=auto_select)
 
     def new_connection(self):
         ConnectionEditorDialog(
@@ -966,7 +999,7 @@ class DynamicQueryApp:
             messagebox.showerror("Probar conexión", f"No se pudo conectar:\n{error[:400]}")
 
     # --- gestión de la lista de consultas ---
-    def refresh_query_list(self, select_name=None):
+    def refresh_query_list(self, select_name=None, auto_select=True):
         conn_name = self.conn_var.get()
         queries = self.store.active_items()
         if conn_name:
@@ -975,7 +1008,7 @@ class DynamicQueryApp:
         self.query_combo["values"] = names
         if select_name and select_name in names:
             self.query_var.set(select_name)
-        elif names:
+        elif names and auto_select:
             self.query_var.set(names[0])
         else:
             self.query_var.set("")
@@ -1053,25 +1086,27 @@ class DynamicQueryApp:
     def on_close(self):
         self.root.destroy()
 
-    def _on_window_resize(self, event):
-        if self.qr_image_pil is not None:
-            self.refresh_qr_display()
-
     def set_loading_state(self, is_loading, message="Listo"):
         self.is_query_running = is_loading
         state = "disabled" if is_loading else "normal"
         for btn in self.action_buttons:
             btn.config(state=state)
+        if not is_loading:
+            self.refresh_qr_button_state()
         combo_state = "disabled" if is_loading else "readonly"
         self.query_combo.config(state=combo_state)
         self.conn_combo.config(state=combo_state)
         self.status_var.set(message)
 
+    def refresh_qr_button_state(self):
+        can_generate = bool(self.last_query and self.last_query.get("generate_qr") and self.last_rows)
+        self.qr_button.config(state="normal" if can_generate else "disabled")
+
     def clear_result_and_qr(self):
         self.update_result_text("")
-        self.qr_label.config(image="", text="Aquí aparecerá el QR")
-        self.qr_photo = None
-        self.qr_image_pil = None
+        self.last_rows = None
+        self.last_query = None
+        self.qr_button.config(state="disabled")
 
     def update_result_text(self, content):
         self.result_text.config(state="normal")
@@ -1162,28 +1197,19 @@ class DynamicQueryApp:
 
     def handle_query_success(self, query, rows, truncated):
         try:
-            pretty_result = json.dumps(rows, ensure_ascii=False, indent=2)
-            if truncated:
-                pretty_result += f"\n\n[Resultado limitado a {MAX_ROWS} filas]"
+            if rows:
+                pretty_result = json.dumps(rows, ensure_ascii=False, indent=2)
+                if truncated:
+                    pretty_result += f"\n\n[Resultado limitado a {MAX_ROWS} filas]"
+            else:
+                pretty_result = "No se encontró ese dato en la base de datos."
             self.update_result_text(pretty_result)
 
-            if query.get("generate_qr") and rows:
-                payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
-                try:
-                    self.qr_image_pil = generate_qr_image(payload)
-                    self.refresh_qr_display()
-                except (DataOverflowError, ValueError):
-                    self.qr_label.config(image="", text="El resultado es demasiado grande para un QR.")
-                    self.qr_photo = None
-                    self.qr_image_pil = None
-            elif query.get("generate_qr") and not rows:
-                self.qr_label.config(image="", text="Sin resultados: no hay datos para generar el QR.")
-                self.qr_photo = None
-                self.qr_image_pil = None
-            else:
-                self.qr_label.config(image="", text="Aquí aparecerá el QR")
+            self.last_rows = rows
+            self.last_query = query
 
-            self.set_loading_state(False, f"Consulta finalizada ({len(rows)} fila(s))")
+            status = f"Consulta finalizada ({len(rows)} fila(s))" if rows else "Sin resultados"
+            self.set_loading_state(False, status)
             logging.info("Consulta '%s' exitosa (%s filas)", query["name"], len(rows))
 
         except Exception:
@@ -1194,28 +1220,18 @@ class DynamicQueryApp:
         self.set_loading_state(False, "Error")
         messagebox.showerror("Error", message)
 
-    def get_qr_display_size(self):
-        self.root.update_idletasks()
-        label_width = self.qr_label.winfo_width()
-        label_height = self.qr_label.winfo_height()
-        if label_width < 100:
-            label_width = 350
-        if label_height < 100:
-            label_height = 350
-        size = min(label_width - 20, label_height - 20)
-        if size < 150:
-            size = 150
-        if size > 500:
-            size = 500
-        return size
-
-    def refresh_qr_display(self):
-        if self.qr_image_pil is None:
+    def generate_qr_from_result(self):
+        if not self.last_rows:
             return
-        size = self.get_qr_display_size()
-        img_resized = self.qr_image_pil.copy().resize((size, size), Image.Resampling.NEAREST)
-        self.qr_photo = ImageTk.PhotoImage(img_resized)
-        self.qr_label.config(image=self.qr_photo, text="")
+        payload = json.dumps(self.last_rows, ensure_ascii=False, separators=(",", ":"))
+        try:
+            image = generate_qr_image(payload)
+        except (DataOverflowError, ValueError):
+            messagebox.showerror(
+                "QR demasiado grande", "El resultado es demasiado grande para generar un código QR."
+            )
+            return
+        QrDisplayDialog(self.root, image)
 
 
 def main():
