@@ -57,7 +57,7 @@ class QueryController:
         queries = self.repo.active_items()
         if conn_name:
             queries = [q for q in queries if query_allowed_on(q, conn_name)]
-        names = [q["name"] for q in queries]
+        names = [q.name for q in queries]
         self.query_combo["values"] = names
         if select_name and select_name in names:
             self.query_var.set(select_name)
@@ -85,11 +85,11 @@ class QueryController:
             self.sql_preview.config(state="disabled")
             return
 
-        self.desc_var.set(query.get("description", ""))
-        self.sql_preview.insert("1.0", query.get("sql", ""))
+        self.desc_var.set(query.description)
+        self.sql_preview.insert("1.0", query.sql)
         self.sql_preview.config(state="disabled")
 
-        self.build_param_widgets(query.get("params", []))
+        self.build_param_widgets(query.params)
 
     def clear_param_widgets(self):
         for widget in self.params_frame.winfo_children():
@@ -98,7 +98,7 @@ class QueryController:
 
     def build_param_widgets(self, params):
         for i, param in enumerate(params):
-            ttk.Label(self.params_frame, text=f"{param['label']}:").grid(
+            ttk.Label(self.params_frame, text=f"{param.label}:").grid(
                 row=i, column=0, sticky="w", padx=5, pady=3
             )
             var = tk.StringVar()
@@ -132,6 +132,6 @@ class QueryController:
         if not query:
             messagebox.showinfo("Eliminar consulta", "Selecciona una consulta primero.")
             return
-        if messagebox.askyesno("Eliminar consulta", f"¿Eliminar la consulta '{query['name']}'?"):
-            self.repo.delete(query["name"])
+        if messagebox.askyesno("Eliminar consulta", f"¿Eliminar la consulta '{query.name}'?"):
+            self.repo.delete(query.name)
             self.refresh_query_list(self.get_current_connection_name())

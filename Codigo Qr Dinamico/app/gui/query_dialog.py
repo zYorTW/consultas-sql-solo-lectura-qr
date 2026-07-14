@@ -4,26 +4,18 @@ from tkinter import ttk, messagebox
 
 from app.config import PARAM_TYPES
 from app.exceptions import ConfigError, SQLSecurityError
+from app.gui.config_dialog import ConfigDialog
+from app.models import ParamConfig, QueryConfig
 
 
-class QueryEditorDialog(tk.Toplevel):
+class QueryEditorDialog(ConfigDialog):
+    entity_label = "consulta"
+    default_geometry = "720x700"
+
     def __init__(self, parent, store, connection_names=None, existing=None, on_saved=None):
-        super().__init__(parent)
-        self.store = store
         self.connection_names = connection_names or []
-        self.existing = existing
-        self.on_saved = on_saved
-        self.original_name = existing["name"] if existing else None
         self.param_rows = []
-
-        self.title("Editar consulta" if existing else "Nueva consulta")
-        self.geometry("720x700")
-        self.transient(parent)
-        self.grab_set()
-
-        self._build_ui()
-        if existing:
-            self._load_existing()
+        super().__init__(parent, store, existing=existing, on_saved=on_saved)
 
     def _build_ui(self):
         pad = {"padx": 8, "pady": 4}
@@ -92,10 +84,10 @@ class QueryEditorDialog(tk.Toplevel):
         row_frame = ttk.Frame(self.params_container)
         row_frame.pack(fill="x", pady=2)
 
-        name_var = tk.StringVar(value=(param or {}).get("name", ""))
-        label_var = tk.StringVar(value=(param or {}).get("label", ""))
-        type_var = tk.StringVar(value=(param or {}).get("type", "str"))
-        required_var = tk.BooleanVar(value=(param or {}).get("required", True))
+        name_var = tk.StringVar(value=param.name if param else "")
+        label_var = tk.StringVar(value=param.label if param else "")
+        type_var = tk.StringVar(value=param.type if param else "str")
+        required_var = tk.BooleanVar(value=param.required if param else True)
 
         ttk.Entry(row_frame, textvariable=name_var, width=16).pack(side="left", padx=2)
         ttk.Entry(row_frame, textvariable=label_var, width=22).pack(side="left", padx=2)
@@ -115,15 +107,15 @@ class QueryEditorDialog(tk.Toplevel):
         self.param_rows.append(row)
 
     def _load_existing(self):
-        self.name_var.set(self.existing["name"])
-        self.desc_var.set(self.existing.get("description", ""))
-        self.sql_text.insert("1.0", self.existing.get("sql", ""))
-        self.generate_qr_var.set(self.existing.get("generate_qr", True))
-        self.active_var.set(self.existing.get("active", True))
-        existing_allowed = self.existing.get("allowed_connections") or []
+        self.name_var.set(self.existing.name)
+        self.desc_var.set(self.existing.description)
+        self.sql_text.insert("1.0", self.existing.sql)
+        self.generate_qr_var.set(self.existing.generate_qr)
+        self.active_var.set(self.existing.active)
+        existing_allowed = self.existing.allowed_connections
         for cname, var in self.allowed_vars:
             var.set(cname in existing_allowed)
-        for p in self.existing.get("params", []):
+        for p in self.existing.params:
             self.add_param_row(p)
 
     def on_save(self):
@@ -131,26 +123,26 @@ class QueryEditorDialog(tk.Toplevel):
         # Conservar nombres permitidos que apunten a conexiones hoy inexistentes
         # (p. ej. definidas en otro equipo) en vez de perderlos silenciosamente.
         known = [cname for cname, _ in self.allowed_vars]
-        existing_allowed = (self.existing or {}).get("allowed_connections") or []
+        existing_allowed = self.existing.allowed_connections if self.existing else []
         allowed = checked + [n for n in existing_allowed if n not in known]
 
-        query = {
-            "name": self.name_var.get().strip(),
-            "description": self.desc_var.get().strip(),
-            "sql": self.sql_text.get("1.0", "end").strip(),
-            "generate_qr": self.generate_qr_var.get(),
-            "active": self.active_var.get(),
-            "allowed_connections": allowed,
-            "params": [
-                {
-                    "name": r["name"].get().strip(),
-                    "label": r["label"].get().strip() or r["name"].get().strip(),
-                    "type": r["type"].get(),
-                    "required": r["required"].get(),
-                }
+        query = QueryConfig(
+            name=self.name_var.get().strip(),
+            description=self.desc_var.get().strip(),
+            sql=self.sql_text.get("1.0", "end").strip(),
+            generate_qr=self.generate_qr_var.get(),
+            active=self.active_var.get(),
+            allowed_connections=allowed,
+            params=[
+                ParamConfig(
+                    name=r["name"].get().strip(),
+                    label=r["label"].get().strip() or r["name"].get().strip(),
+                    type=r["type"].get(),
+                    required=r["required"].get(),
+                )
                 for r in self.param_rows
             ],
-        }
+        )
 
         try:
             if self.original_name:
@@ -162,5 +154,5 @@ class QueryEditorDialog(tk.Toplevel):
             return
 
         if self.on_saved:
-            self.on_saved(query["name"])
+            self.on_saved(query.name)
         self.destroy()

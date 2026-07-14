@@ -7,26 +7,20 @@ from tkinter import ttk, messagebox
 
 from app.database import test_connection
 from app.exceptions import ConfigError
+from app.gui.config_dialog import ConfigDialog
+from app.models import ConnectionConfig
 from app.security import delete_password, get_password, save_password
 
 
-class ConnectionEditorDialog(tk.Toplevel):
+class ConnectionEditorDialog(ConfigDialog):
+    entity_label = "conexión"
+    default_geometry = "600x440"
+
     def __init__(self, parent, store, existing=None, on_saved=None):
-        super().__init__(parent)
-        self.store = store
-        self.existing = existing
-        self.on_saved = on_saved
-        self.original_name = existing["name"] if existing else None
         self.is_testing = False
+        super().__init__(parent, store, existing=existing, on_saved=on_saved)
 
-        self.title("Editar conexión" if existing else "Nueva conexión")
-        self.geometry("600x440")
-        self.transient(parent)
-        self.grab_set()
-
-        self._build_ui()
-        if existing:
-            self._load_existing()
+    def _after_init(self):
         self._sync_auth_fields()
 
     def _build_ui(self):
@@ -99,14 +93,14 @@ class ConnectionEditorDialog(tk.Toplevel):
         self.password_entry.config(state=state)
 
     def _load_existing(self):
-        self.name_var.set(self.existing["name"])
-        self.driver_var.set(self.existing.get("driver", ""))
-        self.server_var.set(self.existing.get("server", ""))
-        self.database_var.set(self.existing.get("database", ""))
-        self.auth_var.set(self.existing.get("auth_type", "sql_server"))
-        self.user_var.set(self.existing.get("username", ""))
-        self.timeout_var.set(str(self.existing.get("timeout", 5)))
-        self.active_var.set(self.existing.get("active", True))
+        self.name_var.set(self.existing.name)
+        self.driver_var.set(self.existing.driver)
+        self.server_var.set(self.existing.server)
+        self.database_var.set(self.existing.database)
+        self.auth_var.set(self.existing.auth_type)
+        self.user_var.set(self.existing.username)
+        self.timeout_var.set(str(self.existing.timeout))
+        self.active_var.set(self.existing.active)
 
     def _collect_config(self):
         try:
@@ -114,17 +108,17 @@ class ConnectionEditorDialog(tk.Toplevel):
         except ValueError:
             raise ConfigError("El timeout debe ser un número entero de segundos.")
 
-        return {
-            "name": self.name_var.get().strip(),
-            "driver": self.driver_var.get().strip(),
-            "server": self.server_var.get().strip(),
-            "database": self.database_var.get().strip(),
-            "auth_type": self.auth_var.get(),
-            "username": self.user_var.get().strip(),
-            "password_ref": (self.existing or {}).get("password_ref", ""),
-            "timeout": timeout,
-            "active": self.active_var.get(),
-        }
+        return ConnectionConfig(
+            name=self.name_var.get().strip(),
+            driver=self.driver_var.get().strip(),
+            server=self.server_var.get().strip(),
+            database=self.database_var.get().strip(),
+            auth_type=self.auth_var.get(),
+            username=self.user_var.get().strip(),
+            password_ref=self.existing.password_ref if self.existing else "",
+            timeout=timeout,
+            active=self.active_var.get(),
+        )
 
     def on_test(self):
         if self.is_testing:
@@ -137,7 +131,7 @@ class ConnectionEditorDialog(tk.Toplevel):
             return
 
         typed = self.password_entry.get() or None
-        if cfg["auth_type"] == "sql_server" and not typed and not get_password(cfg["password_ref"]):
+        if cfg.auth_type == "sql_server" and not typed and not get_password(cfg.password_ref):
             messagebox.showerror(
                 "Falta la contraseña",
                 "Ingresa la contraseña para poder probar la conexión.",
@@ -154,7 +148,7 @@ class ConnectionEditorDialog(tk.Toplevel):
             test_connection(cfg, password)
             error = None
         except Exception as e:
-            logging.exception("Prueba de conexión fallida ('%s')", cfg.get("name"))
+            logging.exception("Prueba de conexión fallida ('%s')", cfg.name)
             error = str(e)
         self.after(0, lambda: self._test_done(error))
 
@@ -179,8 +173,8 @@ class ConnectionEditorDialog(tk.Toplevel):
 
         typed = self.password_entry.get()
 
-        if cfg["auth_type"] == "sql_server":
-            ref = cfg["password_ref"] or uuid.uuid4().hex
+        if cfg.auth_type == "sql_server":
+            ref = cfg.password_ref or uuid.uuid4().hex
             if not typed and not get_password(ref):
                 messagebox.showerror(
                     "No se puede guardar",
@@ -188,12 +182,12 @@ class ConnectionEditorDialog(tk.Toplevel):
                     parent=self,
                 )
                 return
-            cfg["password_ref"] = ref
+            cfg.password_ref = ref
         else:
             # Al pasar a autenticación de Windows, limpiar la credencial almacenada.
-            if cfg["password_ref"]:
-                delete_password(cfg["password_ref"])
-            cfg["password_ref"] = ""
+            if cfg.password_ref:
+                delete_password(cfg.password_ref)
+            cfg.password_ref = ""
 
         try:
             if self.original_name:
@@ -204,9 +198,9 @@ class ConnectionEditorDialog(tk.Toplevel):
             messagebox.showerror("No se puede guardar", str(e), parent=self)
             return
 
-        if cfg["auth_type"] == "sql_server" and typed:
+        if cfg.auth_type == "sql_server" and typed:
             try:
-                save_password(cfg["password_ref"], typed)
+                save_password(cfg.password_ref, typed)
             except Exception:
                 logging.exception("No se pudo guardar la contraseña en el almacén de Windows")
                 messagebox.showerror(
@@ -217,5 +211,5 @@ class ConnectionEditorDialog(tk.Toplevel):
                 )
 
         if self.on_saved:
-            self.on_saved(cfg["name"])
+            self.on_saved(cfg.name)
         self.destroy()

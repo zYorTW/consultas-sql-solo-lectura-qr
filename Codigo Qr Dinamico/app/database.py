@@ -11,30 +11,29 @@ from app.security import get_password
 def build_connection_string(conn_cfg, password=None):
     """Arma el connection string de pyodbc para una conexión guardada.
     'password' permite probar con una contraseña recién digitada sin guardarla."""
-    name = conn_cfg.get("name", "?")
-    driver = conn_cfg.get("driver", "").strip()
-    server = conn_cfg.get("server", "").strip()
-    database = conn_cfg.get("database", "").strip()
+    driver = conn_cfg.driver.strip()
+    server = conn_cfg.server.strip()
+    database = conn_cfg.database.strip()
 
     if not driver or not server or not database:
-        raise ValueError(f"La conexión '{name}' está incompleta (driver, servidor o base de datos).")
+        raise ValueError(f"La conexión '{conn_cfg.name}' está incompleta (driver, servidor o base de datos).")
 
     base = (
         f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
         f"Encrypt=yes;TrustServerCertificate=yes;"
     )
 
-    if conn_cfg.get("auth_type") == "windows":
+    if conn_cfg.auth_type == "windows":
         return base + "Trusted_Connection=yes;"
 
-    username = conn_cfg.get("username", "").strip()
-    pwd = password or get_password(conn_cfg.get("password_ref", ""))
+    username = conn_cfg.username.strip()
+    pwd = password or get_password(conn_cfg.password_ref)
 
     if not username:
-        raise ValueError(f"La conexión '{name}' no tiene usuario configurado.")
+        raise ValueError(f"La conexión '{conn_cfg.name}' no tiene usuario configurado.")
     if not pwd:
         raise ValueError(
-            f"La conexión '{name}' no tiene contraseña guardada en el almacén de credenciales. "
+            f"La conexión '{conn_cfg.name}' no tiene contraseña guardada en el almacén de credenciales. "
             "Edita la conexión y vuelve a ingresar la contraseña."
         )
 
@@ -45,7 +44,7 @@ def test_connection(conn_cfg, password=None):
     """Abre la conexión y ejecuta SELECT 1. Lanza excepción si algo falla."""
     conn = pyodbc.connect(
         build_connection_string(conn_cfg, password),
-        timeout=conn_cfg.get("timeout", 5),
+        timeout=conn_cfg.timeout,
     )
     try:
         conn.cursor().execute("SELECT 1").fetchone()
@@ -71,7 +70,7 @@ def normalize_value(value):
 def fetch_query_data(conn_cfg, sql, params):
     conn = pyodbc.connect(
         build_connection_string(conn_cfg),
-        timeout=conn_cfg.get("timeout", 5),
+        timeout=conn_cfg.timeout,
     )
     try:
         cursor = conn.cursor()

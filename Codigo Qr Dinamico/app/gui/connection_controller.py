@@ -49,10 +49,10 @@ class ConnectionController:
         return self.conn_var.get()
 
     def all_connection_names(self):
-        return [c["name"] for c in self.repo.items]
+        return [c.name for c in self.repo.items]
 
     def refresh_connection_list(self, select_name=None, auto_select=True):
-        names = [c["name"] for c in self.repo.active_items()]
+        names = [c.name for c in self.repo.active_items()]
         self.conn_combo["values"] = names
         current = self.conn_var.get()
         if select_name and select_name in names:
@@ -72,10 +72,8 @@ class ConnectionController:
     def on_connection_selected(self, auto_select=True):
         conn = self.get_selected_connection()
         if conn:
-            auth = "Windows" if conn.get("auth_type") == "windows" else f"SQL ({conn.get('username', '')})"
-            self.conn_info_var.set(
-                f"{conn.get('server', '')}  /  {conn.get('database', '')}  —  Autenticación: {auth}"
-            )
+            auth = "Windows" if conn.auth_type == "windows" else f"SQL ({conn.username})"
+            self.conn_info_var.set(f"{conn.server}  /  {conn.database}  —  Autenticación: {auth}")
         elif not self.repo.active_items():
             self.conn_info_var.set("No hay conexiones. Crea una con 'Nueva conexión'.")
         else:
@@ -105,10 +103,10 @@ class ConnectionController:
             return
         if messagebox.askyesno(
             "Eliminar conexión",
-            f"¿Eliminar la conexión '{conn['name']}'?\n"
+            f"¿Eliminar la conexión '{conn.name}'?\n"
             "También se eliminará su contraseña guardada.",
         ):
-            self.repo.delete(conn["name"])
+            self.repo.delete(conn.name)
             self.refresh_connection_list()
 
     def test_selected_connection(self):
@@ -126,9 +124,9 @@ class ConnectionController:
             test_connection(conn_cfg)
             error = None
         except Exception as e:
-            logging.exception("Prueba de conexión fallida ('%s')", conn_cfg.get("name"))
+            logging.exception("Prueba de conexión fallida ('%s')", conn_cfg.name)
             error = str(e)
-        self.root.after(0, lambda: self._test_connection_done(conn_cfg["name"], error))
+        self.root.after(0, lambda: self._test_connection_done(conn_cfg.name, error))
 
     def _test_connection_done(self, name, error):
         self.set_loading_state(False, "Listo")

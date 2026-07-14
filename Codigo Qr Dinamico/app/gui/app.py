@@ -15,6 +15,7 @@ from app.config import CONNECTIONS_FILE, QUERIES_FILE
 from app.gui.connection_controller import ConnectionController
 from app.gui.execution_controller import ExecutionController
 from app.gui.query_controller import QueryController
+from app.models import ConnectionConfig, QueryConfig
 from app.repositories import ConnectionRepository, JsonListRepository
 from app.validators import validate_connection, validate_query
 
@@ -53,8 +54,8 @@ class DynamicQueryApp:
         result_frame = ttk.LabelFrame(main, text="Resultado JSON", padding=10)
         result_frame.pack(fill="both", expand=True, pady=(0, 10))
 
-        conn_repo = ConnectionRepository(CONNECTIONS_FILE, validate_connection)
-        query_repo = JsonListRepository(QUERIES_FILE, validate_query)
+        conn_repo = ConnectionRepository(CONNECTIONS_FILE, validate_connection, ConnectionConfig.from_dict)
+        query_repo = JsonListRepository(QUERIES_FILE, validate_query, QueryConfig.from_dict)
         for repo in (conn_repo, query_repo):
             if repo.load_error:
                 messagebox.showerror("Error de configuración", repo.load_error)

@@ -56,7 +56,7 @@ class ExecutionController:
         result_scroll.pack(side="right", fill="y")
 
     def refresh_qr_button_state(self):
-        can_generate = bool(self.last_query and self.last_query.get("generate_qr") and self.last_rows)
+        can_generate = bool(self.last_query and self.last_query.generate_qr and self.last_rows)
         self.qr_button.config(state="normal" if can_generate else "disabled")
 
     def clear_result_and_qr(self):
@@ -91,15 +91,15 @@ class ExecutionController:
             messagebox.showinfo("Ejecutar consulta", "Selecciona una consulta primero.")
             return
 
-        if not query_allowed_on(query, conn_cfg["name"]):
+        if not query_allowed_on(query, conn_cfg.name):
             messagebox.showerror(
                 "Consulta no permitida",
-                f"La consulta '{query['name']}' no está permitida en la conexión '{conn_cfg['name']}'.",
+                f"La consulta '{query.name}' no está permitida en la conexión '{conn_cfg.name}'.",
             )
             return
 
         try:
-            validate_readonly_sql(query["sql"])
+            validate_readonly_sql(query.sql)
         except SQLSecurityError as e:
             logging.warning("Consulta bloqueada por seguridad: %s", e)
             messagebox.showerror("Consulta bloqueada", str(e))
@@ -111,7 +111,7 @@ class ExecutionController:
             messagebox.showerror("Parámetro inválido", str(e))
             return
 
-        if needs_row_filter_warning(query["sql"]):
+        if needs_row_filter_warning(query.sql):
             proceed = messagebox.askyesno(
                 "Consulta sin filtro",
                 "Esta consulta no tiene TOP ni WHERE y podría devolver muchas filas.\n"
@@ -128,8 +128,8 @@ class ExecutionController:
 
     def _run_query_thread(self, conn_cfg, query, params_values):
         try:
-            logging.info("Ejecutando consulta '%s' en conexión '%s'", query["name"], conn_cfg["name"])
-            rows, truncated = fetch_query_data(conn_cfg, query["sql"], params_values)
+            logging.info("Ejecutando consulta '%s' en conexión '%s'", query.name, conn_cfg.name)
+            rows, truncated = fetch_query_data(conn_cfg, query.sql, params_values)
             self.root.after(0, lambda: self.handle_query_success(query, rows, truncated))
 
         except pyodbc.InterfaceError:
@@ -165,7 +165,7 @@ class ExecutionController:
 
             status = f"Consulta finalizada ({len(rows)} fila(s))" if rows else "Sin resultados"
             self.set_loading_state(False, status)
-            logging.info("Consulta '%s' exitosa (%s filas)", query["name"], len(rows))
+            logging.info("Consulta '%s' exitosa (%s filas)", query.name, len(rows))
 
         except Exception:
             logging.exception("Error procesando resultado")

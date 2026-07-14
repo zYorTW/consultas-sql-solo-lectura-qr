@@ -1,7 +1,8 @@
 """Reglas de validación puras (sin I/O) para conexiones y consultas guardadas.
 
-Separado de `repositories.py`: un repositorio sabe cargar/guardar, un validador sabe si un
-dict es válido. `repositories.JsonListRepository` invoca estas funciones antes de escribir.
+Separado de `repositories.py`: un repositorio sabe cargar/guardar, un validador sabe si una
+instancia de `models.py` es válida. `repositories.JsonListRepository` invoca estas funciones
+antes de escribir.
 """
 from datetime import datetime
 
@@ -11,67 +12,66 @@ from app.security import strip_sql_noise, validate_readonly_sql
 
 
 def validate_connection(conn):
-    if not conn.get("name", "").strip():
+    if not conn.name.strip():
         raise ConfigError("El nombre de la conexión es obligatorio.")
-    if not conn.get("driver", "").strip():
+    if not conn.driver.strip():
         raise ConfigError("Debes indicar el driver ODBC.")
-    if not conn.get("server", "").strip():
+    if not conn.server.strip():
         raise ConfigError("Debes indicar el servidor.")
-    if not conn.get("database", "").strip():
+    if not conn.database.strip():
         raise ConfigError("Debes indicar la base de datos.")
-    if conn.get("auth_type") not in AUTH_TYPES:
+    if conn.auth_type not in AUTH_TYPES:
         raise ConfigError("El tipo de autenticación debe ser 'windows' o 'sql_server'.")
-    if conn["auth_type"] == "sql_server" and not conn.get("username", "").strip():
+    if conn.auth_type == "sql_server" and not conn.username.strip():
         raise ConfigError("Debes indicar el usuario para autenticación SQL Server.")
-    if not isinstance(conn.get("timeout"), int) or conn["timeout"] < 1:
+    if not isinstance(conn.timeout, int) or conn.timeout < 1:
         raise ConfigError("El timeout debe ser un número entero de segundos (mínimo 1).")
 
 
 def validate_query(query):
-    if not query.get("name", "").strip():
+    if not query.name.strip():
         raise ConfigError("El nombre de la consulta es obligatorio.")
-    if not query.get("sql", "").strip():
+    if not query.sql.strip():
         raise ConfigError("La sentencia SQL es obligatoria.")
 
-    validate_readonly_sql(query["sql"])
+    validate_readonly_sql(query.sql)
 
-    params = query.get("params", [])
-    for p in params:
-        if not p.get("name", "").strip():
+    for p in query.params:
+        if not p.name.strip():
             raise ConfigError("Cada parámetro debe tener un nombre.")
-        if p.get("type") not in PARAM_TYPES:
-            raise ConfigError(f"Tipo de parámetro inválido: {p.get('type')}")
+        if p.type not in PARAM_TYPES:
+            raise ConfigError(f"Tipo de parámetro inválido: {p.type}")
 
-    placeholder_count = strip_sql_noise(query["sql"]).count("?")
-    if placeholder_count != len(params):
+    placeholder_count = strip_sql_noise(query.sql).count("?")
+    if placeholder_count != len(query.params):
         raise ConfigError(
             f"La consulta tiene {placeholder_count} parámetro(s) '?' pero se definieron "
-            f"{len(params)}. Deben coincidir en cantidad y orden."
+            f"{len(query.params)}. Deben coincidir en cantidad y orden."
         )
 
-    allowed = query.get("allowed_connections", [])
-    if not isinstance(allowed, list) or any(not isinstance(n, str) for n in allowed):
+    if not isinstance(query.allowed_connections, list) or any(
+        not isinstance(n, str) for n in query.allowed_connections
+    ):
         raise ConfigError("'allowed_connections' debe ser una lista de nombres de conexión.")
 
 
 def convert_param_value(raw_value, param):
     raw_value = (raw_value or "").strip()
-    label = param.get("label") or param.get("name")
+    label = param.label or param.name
 
     if not raw_value:
-        if param.get("required", True):
+        if param.required:
             raise ValueError(f"El parámetro '{label}' es obligatorio.")
         return None
 
-    ptype = param.get("type", "str")
     try:
-        if ptype == "int":
+        if param.type == "int":
             return int(raw_value)
-        if ptype == "float":
+        if param.type == "float":
             return float(raw_value)
-        if ptype == "date":
+        if param.type == "date":
             return datetime.strptime(raw_value, "%Y-%m-%d").date()
         return raw_value
     except ValueError:
-        hint = " (formato AAAA-MM-DD)" if ptype == "date" else ""
-        raise ValueError(f"El parámetro '{label}' debe ser de tipo {ptype}{hint}.")
+        hint = " (formato AAAA-MM-DD)" if param.type == "date" else ""
+        raise ValueError(f"El parámetro '{label}' debe ser de tipo {param.type}{hint}.")

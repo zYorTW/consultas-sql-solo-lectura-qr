@@ -1,7 +1,9 @@
 """Persistencia JSON pura: cargar/guardar/buscar/agregar/actualizar/eliminar.
 
 La validación de contenido vive en `validators.py`, no aquí — este módulo solo sabe leer y
-escribir listas de dicts identificados por `name`, de forma atómica.
+escribir listas de objetos identificados por `.name`, de forma atómica. `from_dict` se inyecta
+igual que `validate`: cada repositorio sabe a qué dataclass (`models.py`) convertir las filas
+crudas del JSON.
 """
 import json
 import logging
@@ -12,11 +14,12 @@ from app.security import delete_password
 
 
 class JsonListRepository:
-    """Lista de dicts identificados por 'name', persistida en un archivo JSON local."""
+    """Lista de objetos identificados por `.name`, persistida en un archivo JSON local."""
 
-    def __init__(self, path, validate):
+    def __init__(self, path, validate, from_dict):
         self.path = path
         self.validate = validate
+        self.from_dict = from_dict
         self.items = []
         self.load_error = None
         self.load()
@@ -27,7 +30,8 @@ class JsonListRepository:
             return
         try:
             with open(self.path, "r", encoding="utf-8") as f:
-                self.items = json.load(f)
+                raw = json.load(f)
+            self.items = [self.from_dict(d) for d in raw]
         except (json.JSONDecodeError, OSError) as e:
             logging.exception("Error leyendo %s", self.path)
             self.items = []
@@ -36,34 +40,34 @@ class JsonListRepository:
     def save(self):
         tmp_path = self.path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(self.items, f, ensure_ascii=False, indent=2)
+            json.dump([item.to_dict() for item in self.items], f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, self.path)
 
     def active_items(self):
-        return [i for i in self.items if i.get("active", True)]
+        return [i for i in self.items if i.active]
 
     def find_by_name(self, name):
-        return next((i for i in self.items if i["name"] == name), None)
+        return next((i for i in self.items if i.name == name), None)
 
     def add(self, item):
         self.validate(item)
-        if self.find_by_name(item["name"]):
-            raise ConfigError(f"Ya existe un elemento llamado '{item['name']}'.")
+        if self.find_by_name(item.name):
+            raise ConfigError(f"Ya existe un elemento llamado '{item.name}'.")
         self.items.append(item)
         self.save()
 
     def update(self, original_name, item):
         self.validate(item)
-        idx = next((i for i, it in enumerate(self.items) if it["name"] == original_name), None)
+        idx = next((i for i, it in enumerate(self.items) if it.name == original_name), None)
         if idx is None:
             raise ConfigError("El elemento a editar ya no existe.")
-        if item["name"] != original_name and self.find_by_name(item["name"]):
-            raise ConfigError(f"Ya existe un elemento llamado '{item['name']}'.")
+        if item.name != original_name and self.find_by_name(item.name):
+            raise ConfigError(f"Ya existe un elemento llamado '{item.name}'.")
         self.items[idx] = item
         self.save()
 
     def delete(self, name):
-        self.items = [i for i in self.items if i["name"] != name]
+        self.items = [i for i in self.items if i.name != name]
         self.save()
 
 
@@ -72,6 +76,6 @@ class ConnectionRepository(JsonListRepository):
 
     def delete(self, name):
         conn = self.find_by_name(name)
-        if conn and conn.get("password_ref"):
-            delete_password(conn["password_ref"])
+        if conn and conn.password_ref:
+            delete_password(conn.password_ref)
         super().delete(name)
