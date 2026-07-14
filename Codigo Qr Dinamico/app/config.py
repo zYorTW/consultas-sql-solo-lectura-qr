@@ -6,17 +6,17 @@ from logging.handlers import RotatingFileHandler
 
 from dotenv import load_dotenv
 
-# ponytail: anchor config/log paths to the entry script's folder (not cwd, and not
-# this module's own folder) so behavior doesn't depend on how the app is launched
-# (editor Run button, double-clicked .exe, or `python main_dynamic.py` from a
-# different folder) nor on how deep this file is nested under app/. Frozen ->
-# next to the .exe; unfrozen -> next to whatever __main__ script was run
-# (falls back to this file if there's no __main__.__file__, e.g. `python -c`).
+# ponytail: anchor config/log paths to the project root (not cwd) so behavior doesn't
+# depend on how the app is launched (editor Run button, double-clicked .exe,
+# `python main_dynamic.py`, or `python -m tests.test_x` from a subfolder). Frozen ->
+# next to the .exe. Unfrozen -> two levels up from this file's own location, since
+# this file always lives at <project root>/app/config.py; anchoring to __main__'s
+# script instead would break as soon as __main__ isn't the project root itself
+# (e.g. running a test under tests/ via `-m`, where __main__.__file__ points there).
 if getattr(sys, "frozen", False):
-    _entry_path = sys.executable
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
 else:
-    _entry_path = getattr(sys.modules["__main__"], "__file__", None) or __file__
-BASE_DIR = os.path.dirname(os.path.abspath(_entry_path))
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 

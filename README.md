@@ -38,13 +38,15 @@ bloquea antes de tocar la base de datos.
 README.md
 assets/                                    # Capturas usadas en este README
 Codigo Qr Dinamico/
-├── main_dynamic.py                 # Aplicación completa (UI, validación de seguridad, acceso a datos)
-├── db_connections.example.json     # Ejemplo de conexiones a bases de datos (datos ficticios)
-├── queries_config.example.json     # Ejemplo de formato de consultas guardadas (datos ficticios)
+├── main_dynamic.py                 # Punto de entrada (arma la ventana y arranca la app)
 ├── .env.example                    # Ejemplo de variables generales (rutas, logging, límite de filas)
-├── crear_login_solo_lectura.sql    # Script opcional para el DBA: login de SQL Server solo-lectura
-├── test_security.py                # Batería de pruebas de la validación de solo lectura
-└── test_smoke.py                   # Chequeo rápido de validación, conexiones y allowed_connections
+├── app/                             # Todo el código: seguridad, validación, persistencia,
+│                                     # acceso a datos, QR y la interfaz (gui/)
+├── docs/                            # Material de referencia, no leído por la app en tiempo de ejecución
+│   ├── db_connections.example.json  # Ejemplo de conexiones a bases de datos (datos ficticios)
+│   ├── queries_config.example.json  # Ejemplo de formato de consultas guardadas (datos ficticios)
+│   └── crear_login_solo_lectura.sql # Script opcional para el DBA: login de SQL Server solo-lectura
+└── tests/                           # Batería de pruebas (python -m tests.<nombre>, sin frameworks)
 ```
 
 Este repositorio contiene únicamente la herramienta de consultas dinámicas, dentro de
@@ -87,12 +89,12 @@ cd "Codigo Qr Dinamico"
    de datos, tipo de autenticación, usuario/clave, timeout). Se guardan en
    `db_connections.json` y la contraseña queda en el Administrador de credenciales de
    Windows, no en el JSON. Como punto de partida también puedes copiar
-   `db_connections.example.json` a `db_connections.json` y editarlo.
+   `docs/db_connections.example.json` a `db_connections.json` y editarlo.
 
 3. Crea tus consultas desde el botón **"Nueva consulta"** — el `queries_config.json` se
-   genera solo si no existe. También puedes partir de `queries_config.example.json`.
+   genera solo si no existe. También puedes partir de `docs/queries_config.example.json`.
 
-4. (Recomendado) Pide a tu DBA que ejecute `crear_login_solo_lectura.sql` para que cada
+4. (Recomendado) Pide a tu DBA que ejecute `docs/crear_login_solo_lectura.sql` para que cada
    conexión use un login que solo tiene permiso `SELECT`, como segunda capa de defensa
    además de la validación que hace la propia aplicación.
 
@@ -241,7 +243,7 @@ tocar la base de datos:
   REVOKE/DENY/BACKUP/RESTORE/PUT/INTO`, comandos de administración/DoS/exfiltración
   (`SHUTDOWN/KILL/DBCC/RECONFIGURE/WAITFOR/BULK/OPENROWSET/OPENQUERY/OPENDATASOURCE`),
   procedimientos (`sp_`/`xp_`) y sentencias múltiples separadas por `;`. Cubierta por
-  `test_security.py` (58 casos, incluyendo intentos de evasión con comentarios y literales).
+  `tests/test_security.py` (58 casos, incluyendo intentos de evasión con comentarios y literales).
 - Límite de filas por consulta configurable con `MAX_ROWS` (500 por defecto, del lado de la
   app) y advertencia si una consulta no tiene `TOP` ni `WHERE`, antes de ejecutarla.
 - Resultado en JSON en pantalla y, si la consulta lo tiene habilitado, código QR generado
@@ -257,7 +259,7 @@ tocar la base de datos:
 - La validación de solo lectura en la app es la primera línea de defensa, no la única: es un
   validador léxico, no un parser SQL completo, por lo que se recomienda además que cada
   conexión use una cuenta de SQL Server con permisos de solo lectura (`db_datareader`),
-  ver `crear_login_solo_lectura.sql`.
+  ver `docs/crear_login_solo_lectura.sql`.
 - Las contraseñas quedan en el Administrador de credenciales de Windows del usuario y del
   equipo: el `db_connections.json` se puede copiar entre equipos, pero en cada equipo/usuario
   nuevo hay que editar la conexión y reingresar la contraseña una vez.
