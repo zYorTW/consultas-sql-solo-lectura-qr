@@ -2,13 +2,11 @@
 import os
 import tempfile
 
-from main_dynamic import (
-    ConfigError,
-    DatabaseConnectionStore,
-    SQLSecurityError,
-    query_allowed_on,
-    validate_readonly_sql,
-)
+from app.exceptions import ConfigError, SQLSecurityError
+from app.repositories import ConnectionRepository
+from app.security import validate_readonly_sql
+from app.utils import query_allowed_on
+from app.validators import validate_connection
 
 
 def blocked(sql):
@@ -40,7 +38,7 @@ assert not query_allowed_on({"allowed_connections": ["Test"]}, "Prod")
 tmp = os.path.join(tempfile.gettempdir(), "test_conns.json")
 if os.path.exists(tmp):
     os.remove(tmp)
-store = DatabaseConnectionStore(tmp)
+store = ConnectionRepository(tmp, validate_connection)
 
 valid = {
     "name": "Test", "driver": "ODBC Driver 17 for SQL Server", "server": "srv",

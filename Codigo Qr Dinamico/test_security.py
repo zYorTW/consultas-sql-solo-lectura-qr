@@ -3,7 +3,8 @@
 Verifica que TODA sentencia que no sea un SELECT único de solo lectura sea
 rechazada, incluyendo intentos de evasión. No usa frameworks: solo asserts.
 """
-from main_dynamic import validate_readonly_sql, SQLSecurityError
+from app.exceptions import SQLSecurityError
+from app.security import validate_readonly_sql
 
 
 def is_blocked(sql):
